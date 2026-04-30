@@ -7,12 +7,18 @@
 - [x] Market scanner agent
 - [x] Risk engine v1
 - [x] CLI scan komutu
+- [x] Endpoint verification komutu
+- [x] Orderbook midpoint/spread fallback
+- [x] JSON audit log
+- [x] SQLite veri kaydi
+- [x] Resolution Agent v1
+- [x] Probability Agent baseline v1
+- [x] Paper Portfolio / paper position defteri
+- [x] Reporting komutu
+- [x] Safe-mode / kill-switch iskeleti
 - [x] Temel testler
-- [ ] Polymarket endpoint formatlarini canli calisma ile dogrula
-- [ ] Orderbook token id eslestirmesini sertlestir
-- [ ] JSON audit log ekle
-- [ ] SQLite/PostgreSQL veri kaydi ekle
-- [ ] Resolution metni parser v1 ekle
+- [ ] Polymarket endpoint formatlarini kullanici ortaminda canli calisma ile dogrula
+- [ ] Orderbook token id eslestirmesini canli veride sertlestir
 
 ## Faz 2 - Dogrulama katmani
 
@@ -21,28 +27,34 @@
 - [ ] OKX referans verisi
 - [ ] Coinbase spot referans verisi
 - [ ] Kaynak tutarsizligi alarmi
+- [ ] Cross-market event mapping
 
 ## Faz 3 - Ajan kalitesi
 
-- [ ] Resolution Agent
-- [ ] Liquidity Agent
+- [x] Resolution Agent v1
+- [x] Probability Agent baseline v1
+- [ ] Liquidity Agent v2
 - [ ] News Reliability Agent
 - [ ] Social Signal Agent
 - [ ] Smart Wallet Intelligence Agent
+- [ ] Manipulasyon riski skoru
 
 ## Faz 4 - Shadow trading
 
+- [x] Paper position defteri v1
 - [ ] Canli veri ile emir gondermeden karar kaydi
 - [ ] Karar-sonuc performans raporu
 - [ ] Strateji skor sistemi
+- [ ] Model version tracking
 
 ## Faz 5 - Kontrollu canli test
 
 - [ ] API key secret manager
 - [ ] Live execution connector
-- [ ] Kill-switch
+- [x] Kill-switch iskeleti
 - [ ] Reconciliation Agent
 - [ ] Kucuk sermaye limitleri
+- [ ] Manual approval gate
 
 ## Degismez kurallar
 
@@ -52,3 +64,4 @@
 - Likidite yetersizse islem yok.
 - Safe-mode aktifse yeni islem yok.
 - Canli sistem kendi kodunu degistirmez.
+- Model gercek edge uretmedikce sahte guvenle islem acmaz.
