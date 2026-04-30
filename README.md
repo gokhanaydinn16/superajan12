@@ -80,16 +80,21 @@ superajan12 report
 Ek guvenlik/ogrenme komutlari:
 
 ```bash
-superajan12 strategy-score --name baseline --pnl 1.2,-0.5,0.8
+superajan12 strategy-score --name baseline --pnl 1.2,-0.5,0.8 --save
+superajan12 strategy-list --limit 10
 superajan12 model-register --name probability --version 0.1.0 --status candidate --notes "baseline"
+superajan12 model-list --limit 20
 superajan12 reconcile --local 0 --external 0
+superajan12 capital-check --requested-risk 5 --open-risk 10 --daily-pnl -1
 superajan12 execution-check --mode paper
+superajan12 prepare-order --market-id m1 --side YES --price 0.50 --size 10 --force-guard
 ```
 
-Shadow mark ornegi:
+Shadow komutlari:
 
 ```bash
 superajan12 shadow-mark --position-id 1 --market-id m1 --entry-price 0.40 --size-shares 25 --side YES --risk-usdc 10 --latest-price 0.50
+superajan12 shadow-report
 ```
 
 Kaydetmeden deneme:
@@ -154,3 +159,7 @@ Detay: `docs/ENDPOINTS.md`
 - Faz 3: Haber/kaynak guvenilirligi, sosyal sinyal ve smart wallet ajanlari.
 - Faz 4: Shadow trading performans raporu, strategy score ve model tracking.
 - Faz 5: Reconciliation, kill-switch, secret manager, capital limits ve dry-run live connector.
+
+## Mevcut durum
+
+Bu repo canli trading sistemi degil; canliya hazirlik yapan guvenli paper/shadow cekirdegidir. Canli emir gonderen adapter bilerek eklenmemistir. Bir sonraki gercek adim, kullanici ortaminda endpointleri calistirip paper/shadow performansini yeterli orneklemle dogrulamaktir.
