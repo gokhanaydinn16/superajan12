@@ -36,6 +36,7 @@ class OrderBookSnapshot(BaseModel):
     market_id: str
     yes_bids: list[OrderBookLevel] = Field(default_factory=list)
     yes_asks: list[OrderBookLevel] = Field(default_factory=list)
+    source: str = "book"
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -68,6 +69,9 @@ class MarketScore(BaseModel):
     volume_usdc: float
     liquidity_usdc: float
     spread_bps: float | None
+    best_bid: float | None = None
+    best_ask: float | None = None
+    orderbook_source: str | None = None
     suggested_paper_risk_usdc: float = 0.0
 
 
@@ -85,3 +89,11 @@ class PaperTradeIdea(BaseModel):
     risk_usdc: float
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     reasons: list[str] = Field(default_factory=list)
+
+
+class ScanResult(BaseModel):
+    started_at: datetime
+    finished_at: datetime
+    limit: int
+    scores: list[MarketScore]
+    ideas: list[PaperTradeIdea]
