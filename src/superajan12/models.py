@@ -59,12 +59,41 @@ class OrderBookSnapshot(BaseModel):
             return None
         return ((self.best_ask - self.best_bid) / self.mid) * 10_000
 
+    @property
+    def bid_depth_usdc(self) -> float:
+        return sum(level.price * level.size for level in self.yes_bids)
+
+    @property
+    def ask_depth_usdc(self) -> float:
+        return sum(level.price * level.size for level in self.yes_asks)
+
 
 class ResolutionCheck(BaseModel):
     decision: Decision
     confidence: float
     reasons: list[str] = Field(default_factory=list)
     source: str | None = None
+
+
+class LiquidityCheck(BaseModel):
+    decision: Decision
+    confidence: float
+    spread_bps: float | None
+    bid_depth_usdc: float
+    ask_depth_usdc: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ManipulationRisk(BaseModel):
+    decision: Decision
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class NewsReliability(BaseModel):
+    decision: Decision
+    confidence: float
+    reasons: list[str] = Field(default_factory=list)
 
 
 class ProbabilityEstimate(BaseModel):
@@ -87,11 +116,16 @@ class MarketScore(BaseModel):
     spread_bps: float | None
     best_bid: float | None = None
     best_ask: float | None = None
+    bid_depth_usdc: float = 0.0
+    ask_depth_usdc: float = 0.0
     orderbook_source: str | None = None
     implied_probability: float | None = None
     model_probability: float | None = None
     edge: float | None = None
     resolution_confidence: float | None = None
+    liquidity_confidence: float | None = None
+    manipulation_risk_score: float | None = None
+    news_confidence: float | None = None
     suggested_paper_risk_usdc: float = 0.0
 
 
@@ -126,6 +160,16 @@ class PaperPosition(BaseModel):
     @property
     def notional_usdc(self) -> float:
         return self.entry_price * self.size_shares
+
+
+class CrossMarketMatch(BaseModel):
+    source: str
+    external_id: str
+    external_title: str
+    similarity: float
+    yes_price: float | None = None
+    no_price: float | None = None
+    reasons: list[str] = Field(default_factory=list)
 
 
 class ScanResult(BaseModel):
