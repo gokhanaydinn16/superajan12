@@ -7,8 +7,12 @@ from superajan12.agents.manipulation import ManipulationRiskAgent
 from superajan12.agents.news import NewsReliabilityAgent
 from superajan12.agents.portfolio import PaperPortfolio
 from superajan12.agents.probability import ProbabilityAgent
+from superajan12.agents.reference import ReferenceCheck
+from superajan12.agents.reference_reliability import ReferenceReliabilityAgent
 from superajan12.agents.resolution import ResolutionAgent
 from superajan12.agents.risk import RiskEngine
+from superajan12.agents.social import SocialSignalAgent
+from superajan12.agents.wallet import SmartWalletAgent
 from superajan12.connectors.polymarket import PolymarketClient
 from superajan12.models import Decision, MarketScore, OrderBookSnapshot, PaperTradeIdea, ScanResult
 
@@ -25,6 +29,10 @@ class MarketScannerAgent:
         liquidity_agent: LiquidityAgent | None = None,
         manipulation_agent: ManipulationRiskAgent | None = None,
         news_agent: NewsReliabilityAgent | None = None,
+        social_agent: SocialSignalAgent | None = None,
+        wallet_agent: SmartWalletAgent | None = None,
+        reference_agent: ReferenceReliabilityAgent | None = None,
+        reference_checks: list[ReferenceCheck] | None = None,
         paper_portfolio: PaperPortfolio | None = None,
     ) -> None:
         self.polymarket = polymarket
@@ -34,6 +42,10 @@ class MarketScannerAgent:
         self.liquidity_agent = liquidity_agent or LiquidityAgent()
         self.manipulation_agent = manipulation_agent or ManipulationRiskAgent()
         self.news_agent = news_agent or NewsReliabilityAgent()
+        self.social_agent = social_agent or SocialSignalAgent()
+        self.wallet_agent = wallet_agent or SmartWalletAgent()
+        self.reference_agent = reference_agent or ReferenceReliabilityAgent()
+        self.reference_checks = reference_checks or []
         self.paper_portfolio = paper_portfolio or PaperPortfolio()
 
     async def scan(self, limit: int = 25) -> ScanResult:
@@ -57,6 +69,9 @@ class MarketScannerAgent:
             liquidity = self.liquidity_agent.evaluate(market, order_book)
             manipulation = self.manipulation_agent.evaluate(market, order_book)
             news = self.news_agent.evaluate(market)
+            social = self.social_agent.evaluate(market)
+            wallet = self.wallet_agent.evaluate(market)
+            reference = self.reference_agent.evaluate(market, self.reference_checks)
             probability = self.probability_agent.estimate(market, order_book, resolution)
             risk = self.risk_engine.evaluate_market(market=market, order_book=order_book)
 
@@ -66,6 +81,9 @@ class MarketScannerAgent:
                 liquidity_decision=liquidity.decision,
                 manipulation_decision=manipulation.decision,
                 news_decision=news.decision,
+                social_decision=social.decision,
+                wallet_decision=wallet.decision,
+                reference_decision=reference.decision,
                 probability_confidence=probability.confidence,
             )
             spread_bps = order_book.spread_bps if order_book else None
@@ -78,6 +96,9 @@ class MarketScannerAgent:
                 liquidity.confidence,
                 1.0 - manipulation.score,
                 news.confidence,
+                social.confidence,
+                wallet.confidence,
+                reference.confidence,
             )
             reasons = [
                 *order_book_reasons,
@@ -85,6 +106,9 @@ class MarketScannerAgent:
                 *liquidity.reasons,
                 *manipulation.reasons,
                 *news.reasons,
+                *social.reasons,
+                *wallet.reasons,
+                *reference.reasons,
                 *probability.reasons,
                 *risk.reasons,
             ]
@@ -110,6 +134,9 @@ class MarketScannerAgent:
                 liquidity_confidence=liquidity.confidence,
                 manipulation_risk_score=manipulation.score,
                 news_confidence=news.confidence,
+                social_confidence=social.confidence,
+                smart_wallet_confidence=wallet.confidence,
+                reference_confidence=reference.confidence,
                 suggested_paper_risk_usdc=risk.max_risk_usdc if final_decision is Decision.APPROVE else 0.0,
             )
             scores.append(score)
@@ -175,6 +202,9 @@ class MarketScannerAgent:
         liquidity_decision: Decision,
         manipulation_decision: Decision,
         news_decision: Decision,
+        social_decision: Decision,
+        wallet_decision: Decision,
+        reference_decision: Decision,
         probability_confidence: float,
     ) -> Decision:
         hard_decisions = (
@@ -183,6 +213,9 @@ class MarketScannerAgent:
             liquidity_decision,
             manipulation_decision,
             news_decision,
+            social_decision,
+            wallet_decision,
+            reference_decision,
         )
         if Decision.REJECT in hard_decisions:
             return Decision.REJECT
@@ -200,6 +233,9 @@ class MarketScannerAgent:
         liquidity_confidence: float,
         manipulation_safety: float,
         news_confidence: float,
+        social_confidence: float,
+        wallet_confidence: float,
+        reference_confidence: float,
     ) -> float:
         spread_penalty = (spread_bps or 10_000.0) / 10_000.0
         quality_multiplier = max(
@@ -210,7 +246,10 @@ class MarketScannerAgent:
                 + liquidity_confidence
                 + manipulation_safety
                 + news_confidence
+                + social_confidence
+                + wallet_confidence
+                + reference_confidence
             )
-            / 5,
+            / 8,
         )
         return ((volume_usdc * 0.6 + liquidity_usdc * 0.4) / (1.0 + spread_penalty)) * quality_multiplier
