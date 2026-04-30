@@ -22,12 +22,14 @@
 
 ## Faz 2 - Dogrulama katmani
 
-- [ ] Kalshi market data connector
-- [ ] Binance BTC/ETH/SOL referans verisi
-- [ ] OKX referans verisi
-- [ ] Coinbase spot referans verisi
-- [ ] Kaynak tutarsizligi alarmi
+- [x] Kalshi market data connector
+- [x] Binance BTC/ETH/SOL referans verisi
+- [x] OKX referans verisi
+- [x] Coinbase spot referans verisi
+- [x] Kaynak tutarsizligi alarmi v1
 - [ ] Cross-market event mapping
+- [ ] Kalshi-Polymarket benzer market eslestirme skoru
+- [ ] Reference check sonucunu scanner risk kararina bagla
 
 ## Faz 3 - Ajan kalitesi
 
@@ -62,6 +64,7 @@
 - Risk motoru onay vermeden emir yok.
 - Resolution belirsizse islem yok.
 - Likidite yetersizse islem yok.
+- Referans fiyat kaynaklari fazla saparsa kripto olay sinyalleri guvensiz sayilir.
 - Safe-mode aktifse yeni islem yok.
 - Canli sistem kendi kodunu degistirmez.
 - Model gercek edge uretmedikce sahte guvenle islem acmaz.
