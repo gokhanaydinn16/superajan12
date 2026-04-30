@@ -47,6 +47,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 cp .env.example .env
 superajan12 init-db
+superajan12 verify-endpoints
 superajan12 scan --limit 25
 ```
 
@@ -88,6 +89,7 @@ Bu dosyalar `.gitignore` icindedir ve repoya yazilmaz.
 
 - Gamma API: aktif marketleri bulmak icin `/markets`.
 - CLOB API: `/book`, `/midpoint`, `/spread` ile orderbook ve fiyat okuma.
+- `verify-endpoints` komutu public endpointleri canli kontrol eder.
 - Full orderbook basarisizsa scanner midpoint/spread fallback kullanir.
 - Trading endpointleri bu fazda kapali tutulur.
 
