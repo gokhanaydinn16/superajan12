@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from superajan12.models import MarketScore, PaperPosition, PaperTradeIdea, ScanResult, ShadowOutcome
+from superajan12.strategy import StrategyScore
 
 
 class SQLiteStore:
@@ -225,6 +226,59 @@ class SQLiteStore:
             )
             return int(cursor.lastrowid)
 
+    def shadow_summary(self) -> dict[str, object]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS outcome_count,
+                       COALESCE(SUM(unrealized_pnl_usdc), 0) AS total_unrealized_pnl_usdc,
+                       AVG(unrealized_pnl_usdc) AS avg_unrealized_pnl_usdc,
+                       SUM(CASE WHEN unrealized_pnl_usdc > 0 THEN 1 ELSE 0 END) AS wins
+                FROM shadow_outcomes
+                WHERE unrealized_pnl_usdc IS NOT NULL
+                """
+            ).fetchone()
+            result = dict(row)
+            count = int(result.get("outcome_count") or 0)
+            wins = int(result.get("wins") or 0)
+            result["win_rate"] = None if count == 0 else wins / count
+            return result
+
+    def save_strategy_score(self, score: StrategyScore) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO strategy_scores (
+                    strategy_name, sample_count, total_pnl_usdc, win_rate, avg_pnl_usdc, score
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    score.strategy_name,
+                    score.sample_count,
+                    score.total_pnl_usdc,
+                    score.win_rate,
+                    score.avg_pnl_usdc,
+                    score.score,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_strategy_scores(self, limit: int = 10) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, strategy_name, sample_count, total_pnl_usdc, win_rate,
+                       avg_pnl_usdc, score, created_at
+                FROM strategy_scores
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def save_model_version(self, name: str, version: str, status: str, notes: str | None = None) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -235,6 +289,20 @@ class SQLiteStore:
                 (name, version, status, notes),
             )
             return int(cursor.lastrowid)
+
+    def list_model_versions(self, limit: int = 20) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, name, version, status, notes, created_at
+                FROM model_versions
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def _insert_scores(self, conn: sqlite3.Connection, scan_id: int, scores: Iterable[MarketScore]) -> None:
         conn.executemany(
