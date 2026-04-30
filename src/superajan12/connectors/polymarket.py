@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +24,14 @@ class PolymarketClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     async def list_markets(self, limit: int = 50, offset: int = 0) -> list[Market]:
+        """Fetch active Gamma markets.
+
+        Official quickstart examples use Gamma /markets with active, closed and
+        limit parameters. The docs also list offset pagination, so the method
+        keeps offset support while the caller can later move to event-based
+        discovery for larger crawls.
+        """
+
         params = {
             "limit": limit,
             "offset": offset,
@@ -45,12 +54,7 @@ class PolymarketClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     async def get_order_book(self, token_id: str, market_id: str) -> OrderBookSnapshot:
-        """Fetch an order book snapshot for a CLOB token id.
-
-        Polymarket market ids and CLOB token ids are not the same thing. The
-        scanner tries to extract token ids from market metadata before calling
-        this method.
-        """
+        """Fetch an order book snapshot for a CLOB token id."""
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(f"{self.clob_base_url}/book", params={"token_id": token_id})
@@ -61,6 +65,37 @@ class PolymarketClient:
         asks = self._parse_levels(payload.get("asks", []), reverse=False)
         return OrderBookSnapshot(market_id=market_id, yes_bids=bids, yes_asks=asks)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
+    async def get_midpoint(self, token_id: str) -> float | None:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(f"{self.clob_base_url}/midpoint", params={"token_id": token_id})
+            response.raise_for_status()
+            payload = response.json()
+        return self._float_or_none(payload.get("mid") or payload.get("midpoint"))
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
+    async def get_spread(self, token_id: str) -> float | None:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(f"{self.clob_base_url}/spread", params={"token_id": token_id})
+            response.raise_for_status()
+            payload = response.json()
+        return self._float_or_none(payload.get("spread"))
+
+    def snapshot_from_mid_and_spread(
+        self, *, token_id: str, market_id: str, midpoint: float | None, spread: float | None
+    ) -> OrderBookSnapshot | None:
+        """Build a lightweight synthetic BBO snapshot when full book is unavailable."""
+
+        if midpoint is None or spread is None or midpoint <= 0:
+            return None
+        bid = max(0.0, midpoint - spread / 2)
+        ask = min(1.0, midpoint + spread / 2)
+        return OrderBookSnapshot(
+            market_id=market_id,
+            yes_bids=[OrderBookLevel(price=bid, size=0.0)],
+            yes_asks=[OrderBookLevel(price=ask, size=0.0)],
+        )
+
     def extract_yes_token_id(self, market: Market) -> str | None:
         raw = market.raw
         candidates: list[Any] = []
@@ -70,14 +105,27 @@ class PolymarketClient:
                 candidates.append(value)
 
         for value in candidates:
-            if isinstance(value, str):
-                stripped = value.strip().strip("[]")
-                parts = [part.strip().strip('"') for part in stripped.split(",") if part.strip()]
-                if parts:
-                    return parts[0]
-            if isinstance(value, list) and value:
-                return str(value[0])
+            normalized = self._normalize_token_id_list(value)
+            if normalized:
+                return normalized[0]
         return None
+
+    def _normalize_token_id_list(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                pass
+            stripped = stripped.strip("[]")
+            return [part.strip().strip('"').strip("'") for part in stripped.split(",") if part.strip()]
+        return []
 
     def _parse_market(self, item: dict[str, Any]) -> Market:
         end_date = None
@@ -95,8 +143,8 @@ class PolymarketClient:
             category=item.get("category"),
             active=bool(item.get("active", True)),
             closed=bool(item.get("closed", False)),
-            volume_usdc=float(item.get("volume") or item.get("volumeNum") or 0.0),
-            liquidity_usdc=float(item.get("liquidity") or item.get("liquidityNum") or 0.0),
+            volume_usdc=self._float_or_zero(item.get("volume") or item.get("volumeNum")),
+            liquidity_usdc=self._float_or_zero(item.get("liquidity") or item.get("liquidityNum")),
             end_date=end_date,
             resolution_source=item.get("resolutionSource") or item.get("resolution_source"),
             raw=item,
@@ -117,3 +165,13 @@ class PolymarketClient:
             except (TypeError, ValueError):
                 continue
         return sorted(parsed, key=lambda row: row.price, reverse=reverse)
+
+    def _float_or_zero(self, value: Any) -> float:
+        parsed = self._float_or_none(value)
+        return parsed if parsed is not None else 0.0
+
+    def _float_or_none(self, value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
