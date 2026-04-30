@@ -6,10 +6,14 @@ import asyncio
 from rich.console import Console
 from rich.table import Table
 
+from superajan12.agents.reference import CryptoReferenceAgent
 from superajan12.agents.risk import RiskEngine
 from superajan12.agents.scanner import MarketScannerAgent
 from superajan12.audit import AuditLogger
 from superajan12.config import get_settings
+from superajan12.connectors.binance import BinanceFuturesClient
+from superajan12.connectors.coinbase import CoinbasePublicClient
+from superajan12.connectors.okx import OKXPublicClient
 from superajan12.connectors.polymarket import PolymarketClient
 from superajan12.endpoint_check import verify_polymarket_public_endpoints
 from superajan12.reporting import Reporter
@@ -26,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--limit", type=int, default=25)
     scan.add_argument("--no-save", action="store_true", help="Do not write SQLite or audit log records")
 
+    reference = subparsers.add_parser("reference-check", help="Cross-check crypto reference prices")
+    reference.add_argument("--symbols", default="BTC,ETH,SOL", help="Comma-separated symbols: BTC,ETH,SOL")
+
     report_parser = subparsers.add_parser("report", help="Show local paper/shadow report")
     report_parser.add_argument("--top", type=int, default=10)
 
@@ -39,6 +46,16 @@ def build_polymarket_client() -> PolymarketClient:
     return PolymarketClient(
         gamma_base_url=str(settings.polymarket_gamma_base_url),
         clob_base_url=str(settings.polymarket_clob_base_url),
+    )
+
+
+def build_reference_agent() -> CryptoReferenceAgent:
+    settings = get_settings()
+    return CryptoReferenceAgent(
+        binance=BinanceFuturesClient(str(settings.binance_usds_futures_base_url)),
+        okx=OKXPublicClient(str(settings.okx_base_url)),
+        coinbase=CoinbasePublicClient(str(settings.coinbase_public_base_url)),
+        max_deviation_bps=settings.max_reference_price_deviation_bps,
     )
 
 
@@ -116,6 +133,47 @@ async def run_scan(limit: int, save: bool = True) -> None:
             )
 
 
+async def run_reference_check(symbols: str) -> None:
+    agent = build_reference_agent()
+    checks = []
+    requested = [symbol.strip().upper() for symbol in symbols.split(",") if symbol.strip()]
+    for symbol in requested:
+        if symbol == "BTC":
+            checks.append(await agent.check_btc())
+        elif symbol == "ETH":
+            checks.append(await agent.check_eth())
+        elif symbol == "SOL":
+            checks.append(await agent.check_sol())
+        else:
+            console.print(f"[yellow]Unsupported reference symbol skipped:[/yellow] {symbol}")
+
+    table = Table(title="SuperAjan12 Crypto Reference Check")
+    table.add_column("Symbol")
+    table.add_column("OK")
+    table.add_column("Median")
+    table.add_column("Max dev bps")
+    table.add_column("Sources")
+    table.add_column("Reasons")
+
+    for check in checks:
+        source_text = ", ".join(
+            f"{source.source}:{'-' if source.price is None else f'{source.price:.2f}'}"
+            for source in check.sources
+        )
+        table.add_row(
+            check.symbol,
+            "yes" if check.ok else "no",
+            "-" if check.median_price is None else f"{check.median_price:.2f}",
+            "-" if check.max_deviation_bps is None else f"{check.max_deviation_bps:.1f}",
+            source_text,
+            "; ".join(check.reasons),
+        )
+    console.print(table)
+
+    if any(not check.ok for check in checks):
+        raise SystemExit(1)
+
+
 async def run_verify_endpoints() -> None:
     result = await verify_polymarket_public_endpoints(build_polymarket_client())
     table = Table(title="SuperAjan12 Endpoint Verification")
@@ -179,6 +237,8 @@ def main() -> None:
     args = build_parser().parse_args()
     if args.command == "scan":
         asyncio.run(run_scan(limit=args.limit, save=not args.no_save))
+    elif args.command == "reference-check":
+        asyncio.run(run_reference_check(symbols=args.symbols))
     elif args.command == "init-db":
         init_db()
     elif args.command == "verify-endpoints":
