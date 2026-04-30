@@ -96,6 +96,29 @@ class NewsReliability(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class SocialSignal(BaseModel):
+    decision: Decision
+    confidence: float
+    hype_score: float
+    bot_risk_score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SmartWalletSignal(BaseModel):
+    decision: Decision
+    confidence: float
+    wallet_score: float
+    flow_score: float
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ReferenceReliability(BaseModel):
+    decision: Decision
+    confidence: float
+    max_deviation_bps: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
 class ProbabilityEstimate(BaseModel):
     market_id: str
     implied_probability: float | None
@@ -126,6 +149,9 @@ class MarketScore(BaseModel):
     liquidity_confidence: float | None = None
     manipulation_risk_score: float | None = None
     news_confidence: float | None = None
+    social_confidence: float | None = None
+    smart_wallet_confidence: float | None = None
+    reference_confidence: float | None = None
     suggested_paper_risk_usdc: float = 0.0
 
 
@@ -169,6 +195,15 @@ class CrossMarketMatch(BaseModel):
     similarity: float
     yes_price: float | None = None
     no_price: float | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ShadowOutcome(BaseModel):
+    market_id: str
+    reference_price: float | None
+    latest_price: float | None
+    unrealized_pnl_usdc: float | None
+    status: str
     reasons: list[str] = Field(default_factory=list)
 
 
