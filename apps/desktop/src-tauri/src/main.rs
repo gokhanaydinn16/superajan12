@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 
 struct DesktopState {
     backend_child: Mutex<Option<Child>>,
