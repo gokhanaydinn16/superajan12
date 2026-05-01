@@ -24,7 +24,7 @@ from superajan12.market_state import MarketStateValidator
 from superajan12.model_registry import ModelRegistry, ModelVersion
 from superajan12.reconciliation import ReconciliationAgent
 from superajan12.reporting import Reporter
-from superajan12.safety import SafetyController, get_safety_controller
+from superajan12.safety import get_safety_controller
 from superajan12.secrets import EnvSecretManager
 from superajan12.storage import SQLiteStore
 
@@ -538,4 +538,3 @@ def _build_dry_run_preview(guard: Any) -> dict[str, Any] | None:
         "size": order.size,
         "dry_run": order.dry_run,
     }
-
