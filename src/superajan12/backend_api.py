@@ -365,6 +365,8 @@ def create_backend_app() -> FastAPI:
                 "live": sum(1 for source in source_snapshot if source["status"] == "live"),
                 "degraded": sum(1 for source in source_snapshot if source["status"] in {"stale", "offline", "error"}),
                 "not_configured": sum(1 for source in source_snapshot if source["status"] == "not_configured"),
+                "open_circuit_breakers": sum(1 for source in source_snapshot if source.get("circuit_breaker") == "open"),
+                "degraded_sources": _degraded_source_rows(source_snapshot),
             },
         }
         event_bus.publish("system.health.snapshot", payload)
@@ -638,6 +640,25 @@ def _reference_source_rows(source_snapshot: list[dict[str, Any]]) -> list[dict[s
                 "detail": _source_detail(metadata),
                 "last_ok_at": source.get("last_ok_at"),
                 "error": source.get("error"),
+            }
+        )
+    return rows
+
+
+def _degraded_source_rows(source_snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for source in source_snapshot:
+        status = str(source.get("status") or "unknown")
+        if status not in {"stale", "offline", "error"}:
+            continue
+        rows.append(
+            {
+                "name": source.get("name"),
+                "status": status,
+                "failure_count": int(source.get("failure_count") or 0),
+                "circuit_breaker": source.get("circuit_breaker") or "closed",
+                "error": source.get("error"),
+                "latency_ms": source.get("latency_ms"),
             }
         )
     return rows
