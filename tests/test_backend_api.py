@@ -77,6 +77,12 @@ def test_backend_command_center_endpoints_have_expected_shapes() -> None:
     assert "capital" in risk_payload
     assert "execution" in risk_payload
     assert "safety" in risk_payload
+    assert "risk_signals" in risk_payload
+    assert "source_health_gate" in risk_payload
+    assert "funding" in risk_payload["risk_signals"]
+    assert "correlation" in risk_payload["risk_signals"]
+    assert "liquidation_distance" in risk_payload["risk_signals"]
+    assert "daily_loss_buffer" in risk_payload["risk_signals"]
 
     assert execution.status_code == 200
     execution_payload = execution.json()
