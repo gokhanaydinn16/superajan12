@@ -104,10 +104,17 @@ def test_backend_safety_state_endpoints_change_runtime_state() -> None:
     enabled = client.post("/safety/enable-safe-mode", params={"reason": "test"})
     assert enabled.status_code == 200
     assert enabled.json()["safe_mode"] is True
+    assert enabled.json()["kill_switch"] is False
+
+    kill = client.post("/safety/enable-kill-switch", params={"reason": "emergency"})
+    assert kill.status_code == 200
+    assert kill.json()["safe_mode"] is True
+    assert kill.json()["kill_switch"] is True
 
     cleared = client.post("/safety/clear")
     assert cleared.status_code == 200
     assert cleared.json()["safe_mode"] is False
+    assert cleared.json()["kill_switch"] is False
 
 
 def test_backend_health_creates_runtime_directories() -> None:
