@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Brain, Database, Gauge, LineChart, Radar, Shield, WalletCards, Zap } from "lucide-react";
-import { BackendEvent, DashboardPayload, SourceHealth, connectEventStream, getDashboard, getEvents, getSources, runScan, verifyEndpoints } from "./api";
+import {
+  BackendEvent,
+  DashboardPayload,
+  MarketsPayload,
+  SourceHealth,
+  connectEventStream,
+  getDashboard,
+  getEvents,
+  getMarkets,
+  getSources,
+  runScan,
+  verifyEndpoints,
+} from "./api";
 
 type LogItem = { time: string; message: string };
 
@@ -36,12 +48,21 @@ function decisionClass(decision: unknown) {
   return "warn";
 }
 
+function freshnessClass(value: unknown) {
+  const text = String(value || "unknown");
+  if (text === "fresh") return "good";
+  if (text === "warming") return "warn";
+  if (text === "stale") return "bad";
+  return "muted-pill";
+}
+
 function eventToLog(event: BackendEvent) {
   return `${event.type} ${JSON.stringify(event.payload)}`;
 }
 
 export default function App() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
+  const [markets, setMarkets] = useState<MarketsPayload | null>(null);
   const [sources, setSources] = useState<SourceHealth[]>([]);
   const [limit, setLimit] = useState(25);
   const [busy, setBusy] = useState(false);
@@ -52,8 +73,9 @@ export default function App() {
 
   async function refresh() {
     try {
-      const [dash, sourcePayload, events] = await Promise.all([getDashboard(), getSources(), getEvents(20)]);
+      const [dash, marketsPayload, sourcePayload, events] = await Promise.all([getDashboard(), getMarkets(), getSources(), getEvents(20)]);
       setDashboard(dash);
+      setMarkets(marketsPayload);
       setSources(sourcePayload.sources);
       if (events.events.length > 0) {
         setLogs((items) => [
@@ -128,7 +150,10 @@ export default function App() {
 
   const aggregate = dashboard?.aggregate || {};
   const shadow = dashboard?.shadow || {};
-  const topMarkets = dashboard?.top_markets || [];
+  const topMarkets = markets?.top_markets || [];
+  const marketSummary = markets?.market_summary || {};
+  const referenceSources = markets?.reference_sources || [];
+  const latestScan = markets?.latest_scan || null;
   const onlineSources = useMemo(() => sources.filter((source) => source.status === "live").length, [sources]);
 
   return (
@@ -155,7 +180,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>Autonomous Research + Paper/Shadow Operations</h1>
-            <p>Gerçek kaynak bağlıysa canlı veri; kaynak yoksa açıkça not configured/offline. Canlı emir kapalı.</p>
+            <p>Gercek kaynak bagliysa canli veri; kaynak yoksa acikca not configured/offline. Canli emir kapali.</p>
           </div>
           <div className="top-actions">
             <span className="pill warn">Live Orders Disabled</span>
@@ -177,12 +202,12 @@ export default function App() {
         <section className="control-card">
           <div>
             <h2>Operations Control</h2>
-            <p>Scan, endpoint check ve source health desktop sidecar backend üzerinden çalışır.</p>
+            <p>Scan, endpoint check ve source health desktop sidecar backend uzerinden calisir.</p>
           </div>
           <div className="controls">
             <label>Limit</label>
             <input value={limit} onChange={(event) => setLimit(Number(event.target.value || 25))} />
-            <button disabled={busy} onClick={startScan}>Scan Başlat</button>
+            <button disabled={busy} onClick={startScan}>Scan Baslat</button>
             <button disabled={busy} className="secondary" onClick={checkEndpoints}>Endpoint Kontrol</button>
             <button disabled={busy} className="secondary" onClick={refresh}>Yenile</button>
           </div>
@@ -191,19 +216,66 @@ export default function App() {
         <section className="content-grid">
           <div className="panel large">
             <div className="panel-head">
-              <h2>Market Intelligence</h2>
-              <span className="pill muted-pill">real backend data</span>
+              <div>
+                <h2>Market Intelligence</h2>
+                <p className="section-copy">En son taramadan gelen piyasa kalitesi, derinlik ve referans durumu tek yerde.</p>
+              </div>
+              <div className="top-actions">
+                <span className="pill muted-pill">{markets?.source_health_mode || "static"} source mode</span>
+                <span className={`pill ${freshnessClass(latestScan?.freshness)}`}>Scan {String(latestScan?.freshness || "unknown")}</span>
+              </div>
             </div>
-            <table>
-              <thead><tr><th>Decision</th><th>Score</th><th>Edge</th><th>Resolution</th><th>Spread</th><th>Question</th></tr></thead>
+
+            <div className="summary-strip">
+              <SummaryCard title="Visible" value={fmt(marketSummary.visible_market_count, 0)} sub="ranked rows" />
+              <SummaryCard title="Avg Edge" value={fmt(marketSummary.avg_edge, 4)} sub="model minus implied" />
+              <SummaryCard title="Avg Spread" value={fmt(marketSummary.avg_spread_bps, 1)} sub="bps" />
+              <SummaryCard title="Liquidity" value={fmt(marketSummary.total_liquidity_usdc, 0)} sub="visible USDC" />
+              <SummaryCard title="Depth" value={`${fmt(marketSummary.total_bid_depth_usdc, 0)} / ${fmt(marketSummary.total_ask_depth_usdc, 0)}`} sub="bid / ask" />
+              <SummaryCard title="Latest Scan" value={latestScan?.age_seconds === null || latestScan?.age_seconds === undefined ? "-" : `${fmt(latestScan.age_seconds, 0)}s`} sub={String(latestScan?.freshness || "unknown")} />
+            </div>
+
+            <table className="market-table">
+              <thead>
+                <tr>
+                  <th>Decision</th>
+                  <th>Score</th>
+                  <th>Edge</th>
+                  <th>Liquidity</th>
+                  <th>Depth</th>
+                  <th>Resolution</th>
+                  <th>Reference</th>
+                  <th>Question</th>
+                </tr>
+              </thead>
               <tbody>
-                {topMarkets.length === 0 ? <tr><td colSpan={6} className="empty">No market data yet. Run a scan.</td></tr> : topMarkets.map((market, index) => (
+                {topMarkets.length === 0 ? <tr><td colSpan={8} className="empty">No market data yet. Run a scan.</td></tr> : topMarkets.map((market, index) => (
                   <tr key={`${market.market_id}-${index}`}>
                     <td><span className={`pill ${decisionClass(market.decision)}`}>{fmt(market.decision, 0)}</span></td>
-                    <td>{fmt(market.score, 1)}</td>
-                    <td>{fmt(market.edge, 4)}</td>
-                    <td>{fmt(market.resolution_confidence, 2)}</td>
-                    <td>{fmt(market.spread_bps, 1)}</td>
+                    <td>
+                      {fmt(market.score, 1)}
+                      <small>{fmt(market.spread_bps, 1)} bps</small>
+                    </td>
+                    <td>
+                      {fmt(market.edge, 4)}
+                      <small>model {fmt(market.model_probability, 3)} / implied {fmt(market.implied_probability, 3)}</small>
+                    </td>
+                    <td>
+                      {fmt(market.liquidity_usdc, 0)}
+                      <small>vol {fmt(market.volume_usdc, 0)}</small>
+                    </td>
+                    <td>
+                      {fmt(market.bid_depth_usdc, 0)} / {fmt(market.ask_depth_usdc, 0)}
+                      <small>{fmt(market.orderbook_source, 0)}</small>
+                    </td>
+                    <td>
+                      {fmt(market.resolution_confidence, 2)}
+                      <small>liq {fmt(market.liquidity_confidence, 2)}</small>
+                    </td>
+                    <td>
+                      {fmt(market.reference_confidence, 2)}
+                      <small>risk {fmt(market.suggested_paper_risk_usdc, 1)} usdc</small>
+                    </td>
                     <td>{fmt(market.question, 0)}</td>
                   </tr>
                 ))}
@@ -212,12 +284,19 @@ export default function App() {
           </div>
 
           <div className="panel">
-            <div className="panel-head"><h2>Source Health</h2><AlertTriangle size={18} /></div>
-            <div className="source-list">
-              {sources.map((source) => (
-                <div className="source-row" key={source.name}>
-                  <span>{source.name}</span>
-                  <span className={`pill ${statusClass(source.status)}`}>{source.status}</span>
+            <div className="panel-head"><h2>Reference Venues</h2><AlertTriangle size={18} /></div>
+            <div className="source-list source-stack">
+              {referenceSources.map((source) => (
+                <div className="source-row" key={String(source.name)}>
+                  <div className="source-body">
+                    <strong>{fmt(source.label, 0)}</strong>
+                    <div className="source-sub">{fmt(source.detail, 0)}</div>
+                    {source.error ? <div className="source-error">{fmt(source.error, 0)}</div> : null}
+                  </div>
+                  <div className="source-meta">
+                    {source.latency_ms !== null && source.latency_ms !== undefined ? <span className="source-latency">{fmt(source.latency_ms, 0)} ms</span> : null}
+                    <span className={`pill ${statusClass(String(source.status || "missing"))}`}>{fmt(source.status, 0)}</span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -247,4 +326,8 @@ export default function App() {
 
 function Kpi({ title, value, tone }: { title: string; value: string; tone: string }) {
   return <div className={`kpi ${tone}`}><span>{title}</span><strong>{value}</strong></div>;
+}
+
+function SummaryCard({ title, value, sub }: { title: string; value: string; sub: string }) {
+  return <div className="summary-card"><span>{title}</span><strong>{value}</strong><small>{sub}</small></div>;
 }
