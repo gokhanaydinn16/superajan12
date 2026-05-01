@@ -65,22 +65,40 @@ class Reporter:
                 "paper_position_count": 0,
             }
 
-    def top_scored_markets(self, limit: int = 10) -> list[dict[str, Any]]:
+    def top_scored_markets(self, limit: int = 10, latest_scan_only: bool = True) -> list[dict[str, Any]]:
         if not self.sqlite_path.exists():
             return []
         try:
             with sqlite3.connect(self.sqlite_path) as conn:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    """
-                    SELECT market_id, question, decision, score, implied_probability,
-                           model_probability, edge, resolution_confidence, spread_bps
-                    FROM market_scores
-                    ORDER BY score DESC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+                if latest_scan_only:
+                    rows = conn.execute(
+                        """
+                        SELECT market_id, question, decision, score, implied_probability,
+                               model_probability, edge, resolution_confidence, spread_bps
+                        FROM market_scores
+                        WHERE scan_id = (
+                            SELECT id
+                            FROM scans
+                            ORDER BY id DESC
+                            LIMIT 1
+                        )
+                        ORDER BY score DESC
+                        LIMIT ?
+                        """,
+                        (limit,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT market_id, question, decision, score, implied_probability,
+                               model_probability, edge, resolution_confidence, spread_bps
+                        FROM market_scores
+                        ORDER BY score DESC
+                        LIMIT ?
+                        """,
+                        (limit,),
+                    ).fetchall()
                 return [dict(row) for row in rows]
         except sqlite3.OperationalError:
             return []
