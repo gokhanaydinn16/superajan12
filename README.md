@@ -148,6 +148,14 @@ ruff check src tests
 pytest -q
 ```
 
+Kisitli ortam fallback testi:
+
+```bash
+PYTHONPATH=src python -m pytest -q
+```
+
+Bu fallback yol, Python paketleri veya Rust/Node araclari hazir olmadiginda repo icindeki hafif uyumluluk katmani ile backend ve test yuzeyini ayakta tutar.
+
 ## Local ciktilar
 
 Varsayilan olarak su dosyalar olusur:
@@ -203,3 +211,16 @@ Detay: `docs/ENDPOINTS.md`
 ## Mevcut durum
 
 Bu repo canli trading sistemi degil; canliya hazirlik yapan guvenli paper/shadow cekirdegidir. Canli emir gonderen adapter bilerek eklenmemistir. Web dashboard eklendi; sistem artik `superajan12-web` komutuyla tek uygulama gibi acilabilir.
+
+## Desktop notu
+
+Desktop shell `apps/desktop` altindadir. Tauri packaging icin ayri olarak su ortam gereklidir:
+
+- erisilebilir npm registry
+- Rust toolchain (`cargo`, `rustc`)
+
+Bu araclar yoksa backend yine yerelde su komutla dogrulanabilir:
+
+```bash
+PYTHONPATH=src python -m superajan12.backend_server --host 127.0.0.1 --port 8000
+```

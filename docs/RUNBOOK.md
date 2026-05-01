@@ -27,6 +27,21 @@ superajan12 scan --limit 50
 superajan12 report
 ```
 
+## Constrained runtime workflow
+
+If the environment does not have external Python packages, Node registry access, or Rust tooling ready yet, use the local compatibility path first:
+
+```bash
+PYTHONPATH=src python -m pytest -q
+PYTHONPATH=src python -m superajan12.backend_server --host 127.0.0.1 --port 8000
+```
+
+Expected behavior:
+
+- tests still run through the local compatibility layer
+- backend health endpoints still answer locally
+- desktop packaging remains blocked until npm and Rust tooling are available
+
 ## Shadow workflow
 
 After paper positions exist:

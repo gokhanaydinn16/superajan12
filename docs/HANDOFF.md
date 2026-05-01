@@ -2,7 +2,7 @@
 
 ## Project state
 
-SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot and does not submit real orders.
+SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot and does not submit real orders. The backend and tests can now also run through a constrained-runtime compatibility path when external package installation is unavailable.
 
 ## Completed layers
 
@@ -31,8 +31,9 @@ SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot an
 23. Execution guard.
 24. Dry-run live connector.
 25. CLI operations.
-26. Tests and CI.
+26. Tests, CI and runtime-compat validation.
 27. Runbook and production checklist.
+28. Desktop/backend constrained-runtime fallback path.
 
 ## Main commands
 
@@ -50,6 +51,13 @@ superajan12 model-list --limit 20
 superajan12 reconcile --local 0 --external 0
 superajan12 capital-check --requested-risk 5 --open-risk 10 --daily-pnl -1
 superajan12 execution-check --mode paper
+```
+
+Fallback validation commands when package/toolchain setup is blocked:
+
+```bash
+PYTHONPATH=src python -m pytest -q
+PYTHONPATH=src python -m superajan12.backend_server --host 127.0.0.1 --port 8000
 ```
 
 ## Safety position
@@ -76,14 +84,15 @@ Minimum required evidence before live adapter development:
 ## Next engineering tasks
 
 1. Run the system locally and collect paper/shadow data.
-2. Inspect real Polymarket token id behavior across many markets.
-3. Add automated shadow marking from latest market price.
-4. Add category-level performance reports.
-5. Add model promotion policy enforcement in CLI.
-6. Add real on-chain data connector only after source selection.
-7. Add real social data connector only after rate limits and source quality are defined.
-8. Keep live order sending disabled until production checklist is complete.
+2. Restore desktop packaging in an environment with npm registry access and Rust tooling.
+3. Inspect real Polymarket token id behavior across many markets.
+4. Add automated shadow marking from latest market price.
+5. Add category-level performance reports.
+6. Add model promotion policy enforcement in CLI.
+7. Add real on-chain data connector only after source selection.
+8. Add real social data connector only after rate limits and source quality are defined.
+9. Keep live order sending disabled until production checklist is complete.
 
 ## Handoff conclusion
 
-This phase is complete. The repository is ready for local paper/shadow operation and validation. It is safe to move to the next task while this system collects data in paper mode.
+The paper/shadow core is ready for local validation. Desktop packaging is still an environment-dependent follow-up task rather than a completed deliverable.

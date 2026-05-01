@@ -34,8 +34,9 @@ SuperAjan12 is currently a safe paper/shadow trading core for Polymarket-centere
 - Desktop command center navigation shell.
 - Desktop sidecar backend startup with health-check validation and fallback to external backend mode.
 - Local backend endpoints for execution status, system health and event history.
+- Local constrained-runtime compatibility path for backend and tests.
 - CLI commands for scan, report, endpoint verification, reference checks, shadow, strategy, model, reconciliation, capital and execution checks.
-- CI workflow and tests.
+- CI workflow, tests and runtime-compat validation job.
 
 ## What is intentionally not complete
 
@@ -78,6 +79,17 @@ pytest -q
 ruff check src tests
 ```
 
+## Constrained runtime path
+
+If the runtime cannot currently install Python packages or does not yet have npm/Rust tooling ready, use:
+
+```bash
+PYTHONPATH=src python -m pytest -q
+PYTHONPATH=src python -m superajan12.backend_server --host 127.0.0.1 --port 8000
+```
+
+This validates the backend and test surface through the repository's local compatibility layer while desktop packaging remains blocked.
+
 ## Exit criteria before live adapter work
 
 - At least 500 scanned markets recorded.
@@ -92,4 +104,4 @@ ruff check src tests
 
 ## Current recommendation
 
-Continue running paper/shadow mode. Do not add live order sending until the exit criteria above are met.
+Continue running paper/shadow mode. Keep live order sending disabled. Desktop packaging should resume only in an environment with npm registry access and a Rust toolchain.
