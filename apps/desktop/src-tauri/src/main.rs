@@ -60,12 +60,11 @@ fn main() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             let state: State<'_, DesktopState> = app_handle.state();
-            if let Some(mut child) = state
+            let mut backend_child = state
                 .backend_child
                 .lock()
-                .expect("backend child lock poisoned")
-                .take()
-            {
+                .expect("backend child lock poisoned");
+            if let Some(mut child) = backend_child.take() {
                 let _ = child.kill();
             }
         }
