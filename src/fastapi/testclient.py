@@ -20,6 +20,8 @@ class _Response:
 
 
 class TestClient:
+    __test__ = False
+
     def __init__(self, app: FastAPI) -> None:
         self.app = app
 
