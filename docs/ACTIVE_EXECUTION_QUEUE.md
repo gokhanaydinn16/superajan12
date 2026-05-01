@@ -22,6 +22,8 @@ This file is the live queue for the 14-item execution wave. "Started" here means
   - run `cargo check`
   - run `tauri build`
   - fix native compile/package issues in a Rust-capable environment
+- New automation:
+  - GitHub Actions `desktop-tauri-check` job now attempts `cargo check` in a Rust-capable runner
 
 ## 2. Desktop packaging with sidecar
 
@@ -51,6 +53,8 @@ This file is the live queue for the 14-item execution wave. "Started" here means
   - run `npm install`
   - run `npm run build`
   - fix TypeScript/Vite issues if any appear
+- New automation:
+  - GitHub Actions `desktop-web` job now installs desktop dependencies and runs `npm run build`
 
 ## 4. Real FastAPI/Uvicorn runtime smoke test
 
