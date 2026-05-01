@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 
 from rich.console import Console
 from rich.table import Table
@@ -433,6 +432,8 @@ def prepare_order(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    import asyncio
+
     args = build_parser().parse_args()
     if args.command == "scan":
         asyncio.run(run_scan(limit=args.limit, save=not args.no_save))
