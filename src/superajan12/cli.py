@@ -7,21 +7,24 @@ from rich.table import Table
 
 from superajan12.approval import ManualApprovalGate
 from superajan12.agents.reference import CryptoReferenceAgent
-from superajan12.agents.risk import RiskEngine
 from superajan12.agents.scanner import MarketScannerAgent
-from superajan12.audit import AuditLogger
 from superajan12.capital_limits import CapitalLimitEngine
 from superajan12.config import get_settings
 from superajan12.connectors.binance import BinanceFuturesClient
 from superajan12.connectors.coinbase import CoinbasePublicClient
 from superajan12.connectors.okx import OKXPublicClient
-from superajan12.connectors.polymarket import PolymarketClient
 from superajan12.endpoint_check import verify_polymarket_public_endpoints
-from superajan12.execution_guard import ExecutionGuard, ExecutionDecision
+from superajan12.execution_guard import ExecutionDecision, ExecutionGuard
 from superajan12.live_connector import LiveExecutionConnector
 from superajan12.model_registry import ModelRegistry, ModelVersion
 from superajan12.reconciliation import ReconciliationAgent
 from superajan12.reporting import Reporter
+from superajan12.runtime import (
+    build_polymarket_client,
+    build_risk_engine,
+    ensure_runtime_paths,
+    persist_scan_result,
+)
 from superajan12.safety import SafetyController
 from superajan12.shadow import ShadowEvaluator
 from superajan12.storage import SQLiteStore
@@ -101,14 +104,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_polymarket_client() -> PolymarketClient:
-    settings = get_settings()
-    return PolymarketClient(
-        gamma_base_url=str(settings.polymarket_gamma_base_url),
-        clob_base_url=str(settings.polymarket_clob_base_url),
-    )
-
-
 def build_reference_agent() -> CryptoReferenceAgent:
     settings = get_settings()
     return CryptoReferenceAgent(
@@ -121,29 +116,16 @@ def build_reference_agent() -> CryptoReferenceAgent:
 
 async def run_scan(limit: int, save: bool = True) -> None:
     settings = get_settings()
-    client = build_polymarket_client()
-    risk_engine = RiskEngine(
-        max_market_risk_usdc=settings.max_market_risk_usdc,
-        max_daily_loss_usdc=settings.max_daily_loss_usdc,
-        min_volume_usdc=settings.min_volume_usdc,
-        max_spread_bps=settings.max_spread_bps,
-        min_liquidity_usdc=settings.min_liquidity_usdc,
+    scanner = MarketScannerAgent(
+        polymarket=build_polymarket_client(settings),
+        risk_engine=build_risk_engine(settings),
     )
-    scanner = MarketScannerAgent(polymarket=client, risk_engine=risk_engine)
     result = await scanner.scan(limit=limit)
 
     scan_id: int | None = None
     if save:
-        store = SQLiteStore(settings.sqlite_path)
-        scan_id = store.save_scan(result)
-        audit = AuditLogger(settings.audit_log_path)
-        audit.record("scan.completed", {"scan_id": scan_id, **result.model_dump(mode="json")})
-        for score in result.scores:
-            audit.record("market.scored", {"scan_id": scan_id, **score.model_dump(mode="json")})
-        for idea in result.ideas:
-            audit.record("paper_trade.idea", {"scan_id": scan_id, **idea.model_dump(mode="json")})
-        for position in result.paper_positions:
-            audit.record("paper_position.opened", {"scan_id": scan_id, **position.model_dump(mode="json")})
+        ensure_runtime_paths(settings)
+        scan_id = persist_scan_result(result, summary_event_type="scan.completed", settings=settings)
 
     table = Table(title="SuperAjan12 Polymarket Scan")
     table.add_column("Decision")
@@ -250,8 +232,7 @@ async def run_verify_endpoints() -> None:
 
 
 def init_db() -> None:
-    settings = get_settings()
-    SQLiteStore(settings.sqlite_path)
+    settings = ensure_runtime_paths()
     console.print(f"[green]SQLite schema ready:[/green] {settings.sqlite_path}")
 
 
