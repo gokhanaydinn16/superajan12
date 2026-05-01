@@ -52,8 +52,14 @@ def test_backend_command_center_endpoints_have_expected_shapes() -> None:
     assert "providers" in research.json()
 
     assert markets.status_code == 200
-    assert "top_markets" in markets.json()
-    assert "latest_scan" in markets.json()
+    markets_payload = markets.json()
+    assert "top_markets" in markets_payload
+    assert "latest_scan" in markets_payload
+    assert "market_summary" in markets_payload
+    assert "source_summary" in markets_payload
+    assert "reference_sources" in markets_payload
+    assert markets_payload["source_summary"]["total"] >= 0
+    assert len(markets_payload["reference_sources"]) == 6
 
     assert wallet.status_code == 200
     assert "providers" in wallet.json()
