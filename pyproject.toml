@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 superajan12 = "superajan12.cli:main"
 superajan12-web = "superajan12.web:main"
+superajan12-backend = "superajan12.backend_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
