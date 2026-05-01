@@ -49,4 +49,7 @@ def test_top_scored_markets_defaults_to_latest_scan(tmp_path) -> None:
     all_scans = reporter.top_scored_markets(limit=1, latest_scan_only=False)
 
     assert latest_only[0]["market_id"] == "latest-market"
+    assert latest_only[0]["liquidity_usdc"] == 1000
+    assert latest_only[0]["orderbook_source"] == "book"
+    assert latest_only[0]["suggested_paper_risk_usdc"] == 10
     assert all_scans[0]["market_id"] == "older-market"
