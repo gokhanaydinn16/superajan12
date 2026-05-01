@@ -9,12 +9,10 @@ from typing import Any
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 
 from superajan12.approval import ManualApprovalGate
-from superajan12.agents.risk import RiskEngine
 from superajan12.agents.scanner import MarketScannerAgent
 from superajan12.audit import AuditLogger
 from superajan12.capital_limits import CapitalLimitEngine
 from superajan12.config import get_settings
-from superajan12.connectors.polymarket import PolymarketClient
 from superajan12.endpoint_check import verify_polymarket_public_endpoints
 from superajan12.events import event_bus
 from superajan12.execution_guard import ExecutionGuard
@@ -24,26 +22,26 @@ from superajan12.market_state import MarketStateValidator
 from superajan12.model_registry import ModelRegistry, ModelVersion
 from superajan12.reconciliation import ReconciliationAgent
 from superajan12.reporting import Reporter
+from superajan12.runtime import (
+    build_polymarket_client,
+    build_risk_engine,
+    build_scan_response,
+    ensure_runtime_paths,
+    persist_scan_result,
+)
 from superajan12.safety import get_safety_controller
 from superajan12.secrets import EnvSecretManager
 from superajan12.storage import SQLiteStore
 
 
-def _ensure_runtime_paths() -> None:
-    settings = get_settings()
-    SQLiteStore(settings.sqlite_path)
-    settings.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-
-
 def create_backend_app() -> FastAPI:
     app = FastAPI(title="SuperAjan12 Backend", version="0.2.0")
     started_at_monotonic = monotonic()
-    _ensure_runtime_paths()
+    ensure_runtime_paths()
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        settings = get_settings()
-        _ensure_runtime_paths()
+        settings = ensure_runtime_paths()
         return {
             "ok": True,
             "mode": settings.mode,
@@ -83,7 +81,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/dashboard")
     def dashboard(top: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
         reporter = Reporter(settings.sqlite_path)
         payload = {
@@ -122,8 +120,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/markets")
     async def markets(top: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
-        settings = get_settings()
-        SQLiteStore(settings.sqlite_path)
+        settings = ensure_runtime_paths()
         reporter = Reporter(settings.sqlite_path)
         payload = {
             "top_markets": reporter.top_scored_markets(limit=top),
@@ -150,10 +147,7 @@ def create_backend_app() -> FastAPI:
             return payload
 
         settings = get_settings()
-        client = PolymarketClient(
-            gamma_base_url=str(settings.polymarket_gamma_base_url),
-            clob_base_url=str(settings.polymarket_clob_base_url),
-        )
+        client = build_polymarket_client(settings)
         try:
             markets = await client.list_markets(limit=25)
         except Exception as exc:
@@ -212,7 +206,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/strategy/scores")
     def strategy_scores(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
         models = store.list_model_versions(limit=limit)
         rows = store.list_strategy_scores(limit=limit)
@@ -237,7 +231,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/risk/status")
     def risk_status() -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
         open_positions = store.list_open_positions()
         open_risk = sum(float(position.get("risk_usdc") or 0.0) for position in open_positions)
@@ -280,7 +274,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/execution/status")
     def execution_status() -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         safety = get_safety_controller().state()
         approval_gate = ManualApprovalGate()
         pending_ticket = approval_gate.request("live_execution", "desktop execution center preview")
@@ -332,7 +326,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/system/health")
     async def system_health() -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("SUPERAJAN12_SOURCE_HEALTH_MODE") == "static":
             source_registry = build_default_health_registry()
         else:
@@ -406,7 +400,7 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/positions")
     def positions() -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
         rows = store.list_open_positions()
         payload = {
@@ -418,39 +412,22 @@ def create_backend_app() -> FastAPI:
 
     @app.get("/audit/events")
     def audit_events(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         payload = {"events": _read_audit_events(settings.audit_log_path, limit=limit)}
         event_bus.publish("audit.snapshot", {"count": len(payload["events"])})
         return payload
 
     @app.post("/scan")
     async def scan(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
-        settings = get_settings()
+        settings = ensure_runtime_paths()
         event_bus.publish("scan.started", {"limit": limit})
-        client = PolymarketClient(
-            gamma_base_url=str(settings.polymarket_gamma_base_url),
-            clob_base_url=str(settings.polymarket_clob_base_url),
+        scanner = MarketScannerAgent(
+            polymarket=build_polymarket_client(settings),
+            risk_engine=build_risk_engine(settings),
         )
-        risk_engine = RiskEngine(
-            max_market_risk_usdc=settings.max_market_risk_usdc,
-            max_daily_loss_usdc=settings.max_daily_loss_usdc,
-            min_volume_usdc=settings.min_volume_usdc,
-            max_spread_bps=settings.max_spread_bps,
-            min_liquidity_usdc=settings.min_liquidity_usdc,
-        )
-        scanner = MarketScannerAgent(polymarket=client, risk_engine=risk_engine)
         result = await scanner.scan(limit=limit)
-        scan_id = SQLiteStore(settings.sqlite_path).save_scan(result)
-        AuditLogger(settings.audit_log_path).record(
-            "backend.scan.completed",
-            {"scan_id": scan_id, **result.model_dump(mode="json")},
-        )
-        payload = {
-            "scan_id": scan_id,
-            "score_count": len(result.scores),
-            "idea_count": len(result.ideas),
-            "paper_position_count": len(result.paper_positions),
-        }
+        scan_id = persist_scan_result(result, summary_event_type="backend.scan.completed", settings=settings)
+        payload = build_scan_response(result, scan_id)
         event_bus.publish("scan.completed", payload)
         for score in result.scores[:25]:
             event_bus.publish(
@@ -467,13 +444,8 @@ def create_backend_app() -> FastAPI:
 
     @app.post("/verify-endpoints")
     async def verify_endpoints() -> dict[str, Any]:
-        settings = get_settings()
         event_bus.publish("endpoints.verify.started", {})
-        client = PolymarketClient(
-            gamma_base_url=str(settings.polymarket_gamma_base_url),
-            clob_base_url=str(settings.polymarket_clob_base_url),
-        )
-        result = await verify_polymarket_public_endpoints(client)
+        result = await verify_polymarket_public_endpoints(build_polymarket_client())
         payload = {"ok": result.ok, "checks": [check.model_dump() for check in result.checks]}
         event_bus.publish("endpoints.verify.completed", payload)
         return payload
