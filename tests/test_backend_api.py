@@ -203,3 +203,29 @@ def test_strategy_model_transition_endpoint_updates_history(tmp_path, monkeypatc
     strategy_payload = client.get("/strategy/scores").json()
     assert strategy_payload["last_transition"]["to_status"] == "shadow"
     get_settings.cache_clear()
+
+
+def test_execution_operator_acknowledgement_endpoint_persists(tmp_path, monkeypatch) -> None:
+    sqlite_path = tmp_path / "execution.sqlite3"
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("SQLITE_PATH", str(sqlite_path))
+    monkeypatch.setenv("AUDIT_LOG_PATH", str(audit_path))
+    get_settings.cache_clear()
+
+    client = TestClient(app)
+    response = client.post(
+        "/execution/operator-acknowledgement",
+        json={
+            "acknowledged": True,
+            "acknowledged_by": "test-operator",
+            "note": "manual review completed",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    operator_ack = payload["micro_live_readiness"]["operator_ack"]
+    assert operator_ack["acknowledged"] is True
+    assert operator_ack["acknowledged_by"] == "test-operator"
+    assert operator_ack["note"] == "manual review completed"
+    get_settings.cache_clear()
