@@ -216,24 +216,7 @@ def create_backend_app() -> FastAPI:
     def strategy_scores(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
-        models = store.list_model_versions(limit=limit)
-        rows = store.list_strategy_scores(limit=limit)
-        payload = {
-            "scores": rows,
-            "models": models,
-            "live_eligible_models": [
-                row
-                for row in models
-                if ModelRegistry().can_trade_live(
-                    ModelVersion(
-                        name=str(row.get("name") or ""),
-                        version=str(row.get("version") or ""),
-                        status=str(row.get("status") or ""),
-                        notes=None if row.get("notes") is None else str(row.get("notes")),
-                    )
-                )
-            ],
-        }
+        payload = _build_strategy_payload(store=store, limit=limit)
         event_bus.publish("strategy.snapshot", payload)
         return payload
 
@@ -681,6 +664,139 @@ def _degraded_source_rows(source_snapshot: list[dict[str, Any]]) -> list[dict[st
             }
         )
     return rows
+
+
+def _build_strategy_payload(*, store: SQLiteStore, limit: int) -> dict[str, Any]:
+    registry = ModelRegistry()
+    models = store.list_model_versions(limit=limit)
+    scores = store.list_strategy_scores(limit=limit)
+    history = store.list_model_status_history(limit=limit)
+    latest_scores_by_name: dict[str, dict[str, object]] = {}
+    promotion_checks: list[dict[str, Any]] = []
+    live_eligible_models: list[dict[str, object]] = []
+
+    for row in scores:
+        strategy_name = str(row.get("strategy_name") or "")
+        if strategy_name and strategy_name not in latest_scores_by_name:
+            latest_scores_by_name[strategy_name] = row
+
+    for row in models:
+        version = ModelVersion(
+            name=str(row.get("name") or ""),
+            version=str(row.get("version") or ""),
+            status=str(row.get("status") or ""),
+            notes=None if row.get("notes") is None else str(row.get("notes")),
+        )
+        latest_score = latest_scores_by_name.get(version.name)
+        policy = registry.evaluate_promotion(version, latest_score=latest_score)
+        live_eligible = registry.can_trade_live(version)
+        if live_eligible:
+            live_eligible_models.append(row)
+        promotion_checks.append(
+            {
+                "name": version.name,
+                "version": version.version,
+                "status": version.status,
+                "notes": version.notes,
+                "created_at": row.get("created_at"),
+                "live_eligible": live_eligible,
+                "ready": policy.ready,
+                "next_statuses": list(policy.next_statuses),
+                "reasons": list(policy.reasons),
+                "blocking_reasons": [] if policy.ready else list(policy.reasons),
+                "latest_score": latest_score,
+                "recommended_action": _recommended_model_action(version.status, policy.ready, policy.next_statuses),
+            }
+        )
+
+    return {
+        "scores": scores,
+        "models": models,
+        "live_eligible_models": live_eligible_models,
+        "promotion_checks": promotion_checks,
+        "model_history": history,
+        "summary": _build_strategy_summary(
+            models=models,
+            promotion_checks=promotion_checks,
+            history=history,
+            scores=scores,
+        ),
+        "last_transition": None if not history else history[0],
+    }
+
+
+def _build_strategy_summary(
+    *,
+    models: list[dict[str, object]],
+    promotion_checks: list[dict[str, Any]],
+    history: list[dict[str, object]],
+    scores: list[dict[str, object]],
+) -> dict[str, Any]:
+    counts = {"candidate": 0, "shadow": 0, "approved": 0, "retired": 0, "unknown": 0}
+    for row in models:
+        status = str(row.get("status") or "unknown")
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["unknown"] += 1
+
+    ready_model_count = sum(1 for row in promotion_checks if bool(row.get("ready")))
+    blocked_model_count = sum(
+        1
+        for row in promotion_checks
+        if not bool(row.get("ready")) and str(row.get("status") or "") in {"candidate", "shadow"}
+    )
+    ready_for_shadow_count = sum(
+        1 for row in promotion_checks if bool(row.get("ready")) and str(row.get("status") or "") == "candidate"
+    )
+    ready_for_approval_count = sum(
+        1 for row in promotion_checks if bool(row.get("ready")) and str(row.get("status") or "") == "shadow"
+    )
+    latest_score = None if not scores else scores[0]
+    latest_transition = None if not history else history[0]
+
+    if ready_for_approval_count > 0:
+        next_gate = "Manual approval review is the next gate for shadow models."
+    elif ready_for_shadow_count > 0:
+        next_gate = "Promote ready candidate models into shadow validation."
+    elif counts["approved"] > 0:
+        next_gate = "Execution guard, secrets and operator approvals are the remaining live blockers."
+    elif counts["candidate"] + counts["shadow"] > 0:
+        next_gate = "Collect more scored outcomes before the next promotion step."
+    else:
+        next_gate = "Register a candidate model and record strategy scores to start the promotion ladder."
+
+    return {
+        "total_models": len(models),
+        "candidate_count": counts["candidate"],
+        "shadow_count": counts["shadow"],
+        "approved_count": counts["approved"],
+        "retired_count": counts["retired"],
+        "unknown_count": counts["unknown"],
+        "ready_model_count": ready_model_count,
+        "blocked_model_count": blocked_model_count,
+        "ready_for_shadow_count": ready_for_shadow_count,
+        "ready_for_approval_count": ready_for_approval_count,
+        "history_count": len(history),
+        "next_gate": next_gate,
+        "latest_score_name": None if latest_score is None else latest_score.get("strategy_name"),
+        "latest_score_created_at": None if latest_score is None else latest_score.get("created_at"),
+        "latest_transition_at": None if latest_transition is None else latest_transition.get("changed_at"),
+    }
+
+
+def _recommended_model_action(status: str, ready: bool, next_statuses: tuple[str, ...]) -> str:
+    if not next_statuses:
+        return "No further promotion path."
+    if ready:
+        return f"Ready to move toward {next_statuses[0]}."
+    if status == "candidate":
+        return "Add more paper/shadow evidence before shadow promotion."
+    if status == "shadow":
+        return "Add more validated outcomes before approval review."
+    if status == "approved":
+        return "Monitor live guard readiness or retire if score quality slips."
+    return "Review strategy lifecycle state."
 
 
 def _build_risk_signals(
