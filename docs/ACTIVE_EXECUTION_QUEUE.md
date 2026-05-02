@@ -136,18 +136,26 @@ This file is the live queue for the 14-item execution wave. "Started" here means
 
 ## 9. Strategy lifecycle and model promotion
 
-- Status: started
+- Status: materially advanced
 - Evidence:
   - `src/superajan12/model_registry.py`
-  - `src/superajan12/strategy.py`
-  - desktop Strategy view in `apps/desktop/src/App.tsx`
+  - `src/superajan12/storage.py`
+  - `src/superajan12/backend_api.py`
+  - `src/superajan12/cli.py`
+  - `apps/desktop/src/App.tsx`
+  - `tests/test_model_registry.py`
+  - `tests/test_storage_model_history.py`
+  - `tests/test_backend_api.py`
 - Current state:
-  - strategy scores and model versions are visible
-  - full candidate -> shadow -> approved -> retired workflow is partial
+  - candidate -> shadow -> approved -> retired transition policy exists
+  - promotion readiness checks are computed from latest strategy scores
+  - model status history is persisted and exposed in backend/UI
+  - desktop Strategy panel now shows policy checks, recent transitions and next-gate summary
+  - CLI can inspect stored policy state with `model-policy`
 - Next move:
-  - add promotion history and rejection reasons
-  - add transition policy checks
-  - expose promotion state in backend/UI
+  - add explicit operator-driven promotion mutation/command path instead of registration-only transitions
+  - tie promotion checks to sample-size readiness from micro-live checklist
+  - add audit event classes for promotion approvals and rejections
 
 ## 10. Risk model expansion
 
