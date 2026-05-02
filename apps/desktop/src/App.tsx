@@ -84,6 +84,10 @@ function nextStrategyAction(status: string, liveEligibleCount: number) {
   return "Register the first model version to start the promotion ladder.";
 }
 
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 export default function App() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [markets, setMarkets] = useState<MarketsPayload | null>(null);
@@ -161,15 +165,17 @@ export default function App() {
     setStrategyBusy(true);
     const model = strategy?.models?.[0];
     const note = operatorNote.trim();
+    const modelName = stringField(model?.name);
+    const modelVersion = stringField(model?.version);
 
-    addLog(`Operator transition requested ${status}${model?.version ? ` for ${String(model.version)}` : ""}`);
+    addLog(`Operator transition requested ${status}${modelVersion ? ` for ${modelVersion}` : ""}`);
 
     try {
       const result = await transitionStrategyModel({
         status,
         notes: note || undefined,
-        model_name: model?.name,
-        model_version: model?.version,
+        model_name: modelName,
+        model_version: modelVersion,
       });
       addLog(`Operator transition completed ${JSON.stringify(result)}`);
       setOperatorNote("");
