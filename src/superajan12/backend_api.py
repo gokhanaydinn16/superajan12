@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from superajan12.agents.reference import ReferenceCheck
 from superajan12.approval import ManualApprovalGate
 from superajan12.agents.scanner import MarketScannerAgent
 from superajan12.capital_limits import CapitalLimitEngine
@@ -22,9 +24,11 @@ from superajan12.live_connector import LiveExecutionConnector
 from superajan12.market_state import MarketStateValidator
 from superajan12.model_registry import ModelRegistry, ModelVersion
 from superajan12.reconciliation import ReconciliationAgent
+from superajan12.reference_status import serialize_reference_check, summarize_reference_checks
 from superajan12.reporting import Reporter
 from superajan12.runtime import (
     build_polymarket_client,
+    build_reference_agent,
     build_risk_engine,
     build_scan_response,
     ensure_runtime_paths,
@@ -294,6 +298,17 @@ def create_backend_app() -> FastAPI:
         event_bus.publish("strategy.model.transitioned", payload)
         return payload
 
+    @app.get("/reference/checks")
+    async def reference_checks() -> dict[str, Any]:
+        settings = ensure_runtime_paths()
+        checks = await _load_reference_checks(settings)
+        payload = {
+            "checks": [serialize_reference_check(check) for check in checks],
+            "summary": summarize_reference_checks(checks),
+        }
+        event_bus.publish("reference.snapshot", payload)
+        return payload
+
     @app.get("/risk/status")
     async def risk_status() -> dict[str, Any]:
         settings = ensure_runtime_paths()
@@ -546,13 +561,18 @@ def create_backend_app() -> FastAPI:
     async def scan(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         event_bus.publish("scan.started", {"limit": limit})
+        reference_checks = await _load_reference_checks(settings)
         scanner = MarketScannerAgent(
             polymarket=build_polymarket_client(settings),
             risk_engine=build_risk_engine(settings),
+            reference_checks=reference_checks,
         )
         result = await scanner.scan(limit=limit)
         scan_id = persist_scan_result(result, summary_event_type="backend.scan.completed", settings=settings)
-        payload = build_scan_response(result, scan_id)
+        payload = {
+            **build_scan_response(result, scan_id),
+            "reference_summary": summarize_reference_checks(reference_checks),
+        }
         event_bus.publish("scan.completed", payload)
         for score in result.scores[:25]:
             event_bus.publish(
@@ -638,6 +658,32 @@ def _latest_strategy_score_for(store: SQLiteStore, strategy_name: str) -> dict[s
         if str(row.get("strategy_name") or "") == strategy_name:
             return row
     return None
+
+
+async def _load_reference_checks(settings: Any) -> list[ReferenceCheck]:
+    agent = build_reference_agent(settings)
+    checks = await asyncio.gather(
+        agent.check_btc(),
+        agent.check_eth(),
+        agent.check_sol(),
+        return_exceptions=True,
+    )
+    loaded: list[ReferenceCheck] = []
+    for symbol, item in zip(("BTC", "ETH", "SOL"), checks, strict=False):
+        if isinstance(item, ReferenceCheck):
+            loaded.append(item)
+            continue
+        loaded.append(
+            ReferenceCheck(
+                symbol=symbol,
+                ok=False,
+                median_price=None,
+                max_deviation_bps=None,
+                sources=(),
+                reasons=(f"reference check failed: {item.__class__.__name__}",),
+            )
+        )
+    return loaded
 
 
 def _build_dry_run_preview(guard: Any) -> dict[str, Any] | None:
