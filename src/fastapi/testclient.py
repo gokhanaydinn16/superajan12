@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_type_hints
 
 from pydantic import BaseModel
 
@@ -67,12 +67,13 @@ def _build_kwargs(
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     signature = inspect.signature(func)
+    type_hints = get_type_hints(func)
     for name, parameter in signature.parameters.items():
+        annotation = type_hints.get(name, parameter.annotation)
         if name in params:
-            kwargs[name] = _coerce_value(params[name], parameter.annotation)
+            kwargs[name] = _coerce_value(params[name], annotation)
             continue
         if json_body is not None:
-            annotation = parameter.annotation
             if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
                 kwargs[name] = annotation(**json_body)
                 continue
