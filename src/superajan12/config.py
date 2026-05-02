@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     live_cancel_on_disconnect_required: bool = Field(
         default=True, validation_alias="LIVE_CANCEL_ON_DISCONNECT_REQUIRED"
     )
+    shadow_min_sample_count_for_live: int = Field(
+        default=20, validation_alias="SHADOW_MIN_SAMPLE_COUNT_FOR_LIVE"
+    )
+    shadow_max_avg_slippage_bps: float = Field(
+        default=40.0, validation_alias="SHADOW_MAX_AVG_SLIPPAGE_BPS"
+    )
+    shadow_min_fill_rate: float = Field(
+        default=0.95, validation_alias="SHADOW_MIN_FILL_RATE"
+    )
+    shadow_min_reconcile_pass_rate: float = Field(
+        default=1.0, validation_alias="SHADOW_MIN_RECONCILE_PASS_RATE"
+    )
 
     audit_log_path: Path = Field(default=Path("data/audit/events.jsonl"), validation_alias="AUDIT_LOG_PATH")
     sqlite_path: Path = Field(default=Path("data/superajan12.sqlite3"), validation_alias="SQLITE_PATH")
