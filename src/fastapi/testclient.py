@@ -5,6 +5,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel
+
 from .app import FastAPI, HTTPException, QueryValue
 from .responses import HTMLResponse
 
@@ -28,12 +30,23 @@ class TestClient:
     def get(self, path: str, params: dict[str, Any] | None = None) -> _Response:
         return self._request("GET", path, params=params)
 
-    def post(self, path: str, params: dict[str, Any] | None = None) -> _Response:
-        return self._request("POST", path, params=params)
+    def post(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> _Response:
+        return self._request("POST", path, params=params, json_body=json)
 
-    def _request(self, method: str, path: str, params: dict[str, Any] | None = None) -> _Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> _Response:
         route = next(item for item in self.app.routes if item.method == method and item.path == path)
-        kwargs = _build_kwargs(route.endpoint, params or {})
+        kwargs = _build_kwargs(route.endpoint, params=params or {}, json_body=json_body)
         try:
             result = route.endpoint(**kwargs)
             if inspect.isawaitable(result):
@@ -46,13 +59,26 @@ class TestClient:
         return _Response(status_code=200, _body=result, text=str(result))
 
 
-def _build_kwargs(func, params: dict[str, Any]) -> dict[str, Any]:
+def _build_kwargs(
+    func,
+    *,
+    params: dict[str, Any],
+    json_body: dict[str, Any] | None,
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     signature = inspect.signature(func)
     for name, parameter in signature.parameters.items():
         if name in params:
             kwargs[name] = _coerce_value(params[name], parameter.annotation)
             continue
+        if json_body is not None:
+            annotation = parameter.annotation
+            if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+                kwargs[name] = annotation(**json_body)
+                continue
+            if name in json_body:
+                kwargs[name] = _coerce_value(json_body[name], annotation)
+                continue
         default = parameter.default
         if isinstance(default, QueryValue):
             if default.default is ...:
