@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -56,6 +56,7 @@ class PolymarketClient:
     async def get_order_book(self, token_id: str, market_id: str) -> OrderBookSnapshot:
         """Fetch an order book snapshot for a CLOB token id."""
 
+        received_at = datetime.now(timezone.utc)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.get(f"{self.clob_base_url}/book", params={"token_id": token_id})
             response.raise_for_status()
@@ -63,7 +64,68 @@ class PolymarketClient:
 
         bids = self._parse_levels(payload.get("bids", []), reverse=True)
         asks = self._parse_levels(payload.get("asks", []), reverse=False)
-        return OrderBookSnapshot(market_id=market_id, yes_bids=bids, yes_asks=asks)
+        captured_at = self._parse_timestamp(payload.get("timestamp")) or received_at
+        sequence = self._int_or_none(payload.get("sequence") or payload.get("seq") or payload.get("seqNum"))
+        previous_sequence = self._int_or_none(
+            payload.get("previous_sequence") or payload.get("prevSeq") or payload.get("previousSeqNum")
+        )
+        checksum = payload.get("checksum")
+        checksum_valid = payload.get("checksum_valid")
+        if not isinstance(checksum_valid, bool):
+            checksum_valid = None
+        return OrderBookSnapshot(
+            market_id=market_id,
+            yes_bids=bids,
+            yes_asks=asks,
+            source="book",
+            venue="polymarket_clob",
+            token_id=token_id,
+            snapshot_kind="snapshot",
+            snapshot_id=str(payload.get("hash") or payload.get("timestamp") or market_id),
+            sequence_start=sequence,
+            sequence_end=sequence,
+            previous_sequence_end=previous_sequence,
+            checksum=None if checksum is None else str(checksum),
+            checksum_valid=checksum_valid,
+            is_synthetic=False,
+            depth_levels=max(len(bids), len(asks)),
+            captured_at=captured_at,
+            received_at=received_at,
+        )
+
+    async def get_order_book_with_fallback(
+        self,
+        *,
+        token_id: str,
+        market_id: str,
+    ) -> tuple[OrderBookSnapshot | None, list[str]]:
+        reasons: list[str] = []
+        try:
+            return await self.get_order_book(token_id=token_id, market_id=market_id), reasons
+        except Exception as exc:  # noqa: BLE001 - one market must not crash the whole scan
+            reasons.append(f"orderbook hatasi: {exc.__class__.__name__}")
+
+        midpoint = None
+        spread = None
+        try:
+            midpoint = await self.get_midpoint(token_id=token_id)
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(f"midpoint fallback hatasi: {exc.__class__.__name__}")
+
+        try:
+            spread = await self.get_spread(token_id=token_id)
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(f"spread fallback hatasi: {exc.__class__.__name__}")
+
+        snapshot = self.snapshot_from_mid_and_spread(
+            token_id=token_id,
+            market_id=market_id,
+            midpoint=midpoint,
+            spread=spread,
+        )
+        if snapshot is not None:
+            reasons.append("orderbook yerine midpoint/spread fallback kullanildi")
+        return snapshot, reasons
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=0.5, max=4))
     async def get_midpoint(self, token_id: str) -> float | None:
@@ -92,10 +154,20 @@ class PolymarketClient:
             return None
         bid = max(0.0, midpoint - spread / 2)
         ask = min(1.0, midpoint + spread / 2)
+        now = datetime.now(timezone.utc)
         return OrderBookSnapshot(
             market_id=market_id,
-            yes_bids=[OrderBookLevel(price=bid, size=0.0)],
-            yes_asks=[OrderBookLevel(price=ask, size=0.0)],
+            yes_bids=[OrderBookLevel(price=bid, size=1.0)],
+            yes_asks=[OrderBookLevel(price=ask, size=1.0)],
+            source="midpoint_spread_fallback",
+            venue="polymarket_clob",
+            token_id=token_id,
+            snapshot_kind="synthetic_bbo",
+            snapshot_id=f"fallback:{market_id}:{token_id}",
+            is_synthetic=True,
+            depth_levels=1,
+            captured_at=now,
+            received_at=now,
         )
 
     def extract_yes_token_id(self, market: Market) -> str | None:
@@ -177,3 +249,22 @@ class PolymarketClient:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _int_or_none(self, value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_timestamp(self, value: Any) -> datetime | None:
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None

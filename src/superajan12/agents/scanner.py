@@ -14,11 +14,12 @@ from superajan12.agents.risk import RiskEngine
 from superajan12.agents.social import SocialSignalAgent
 from superajan12.agents.wallet import SmartWalletAgent
 from superajan12.connectors.polymarket import PolymarketClient
+from superajan12.market_state import MarketStateValidation, MarketStateValidator
 from superajan12.models import Decision, MarketScore, OrderBookSnapshot, PaperTradeIdea, ScanResult
 
 
 class MarketScannerAgent:
-    """Finds tradable Polymarket candidates and creates paper-trade ideas."""
+    """Find tradable Polymarket candidates and create paper-trade ideas."""
 
     def __init__(
         self,
@@ -34,6 +35,7 @@ class MarketScannerAgent:
         reference_agent: ReferenceReliabilityAgent | None = None,
         reference_checks: list[ReferenceCheck] | None = None,
         paper_portfolio: PaperPortfolio | None = None,
+        market_state_validator: MarketStateValidator | None = None,
     ) -> None:
         self.polymarket = polymarket
         self.risk_engine = risk_engine
@@ -47,6 +49,7 @@ class MarketScannerAgent:
         self.reference_agent = reference_agent or ReferenceReliabilityAgent()
         self.reference_checks = reference_checks or []
         self.paper_portfolio = paper_portfolio or PaperPortfolio()
+        self.market_state_validator = market_state_validator or MarketStateValidator()
 
     async def scan(self, limit: int = 25) -> ScanResult:
         started_at = datetime.now(timezone.utc)
@@ -61,26 +64,34 @@ class MarketScannerAgent:
             order_book_reasons: list[str] = []
 
             if token_id:
-                order_book = await self._load_order_book_with_fallback(token_id, market.id, order_book_reasons)
+                order_book, load_reasons = await self.polymarket.get_order_book_with_fallback(
+                    token_id=token_id,
+                    market_id=market.id,
+                )
+                order_book_reasons.extend(load_reasons)
             else:
                 order_book_reasons.append("YES token id bulunamadi")
 
+            market_state = self.market_state_validator.validate(market, order_book)
+            analysis_book = order_book if market_state.ok else None
+
             resolution = self.resolution_agent.evaluate(market)
-            liquidity = self.liquidity_agent.evaluate(market, order_book)
-            manipulation = self.manipulation_agent.evaluate(market, order_book)
+            liquidity = self.liquidity_agent.evaluate(market, analysis_book)
+            manipulation = self.manipulation_agent.evaluate(market, analysis_book)
             news = self.news_agent.evaluate(market)
             social = self.social_agent.evaluate(market)
             wallet = self.wallet_agent.evaluate(market)
             reference = self.reference_agent.evaluate(market, self.reference_checks)
-            probability = self.probability_agent.estimate(market, order_book, resolution)
+            probability = self.probability_agent.estimate(market, analysis_book, resolution)
             risk = self.risk_engine.evaluate_market(
                 market=market,
-                order_book=order_book,
+                order_book=analysis_book,
                 reference_gate_ok=reference.decision is not Decision.REJECT,
                 reference_gate_reasons=reference.reasons,
             )
 
             final_decision = self._combine_decisions(
+                market_state_decision=self._market_state_decision(market_state),
                 risk_decision=risk.decision,
                 resolution_decision=resolution.decision,
                 liquidity_decision=liquidity.decision,
@@ -91,22 +102,24 @@ class MarketScannerAgent:
                 reference_decision=reference.decision,
                 probability_confidence=probability.confidence,
             )
-            spread_bps = order_book.spread_bps if order_book else None
+            spread_bps = analysis_book.spread_bps if analysis_book else None
             score_value = self._score_market(
-                market.volume_usdc,
-                market.liquidity_usdc,
-                spread_bps,
-                probability.confidence,
-                resolution.confidence,
-                liquidity.confidence,
-                1.0 - manipulation.score,
-                news.confidence,
-                social.confidence,
-                wallet.confidence,
-                reference.confidence,
+                volume_usdc=market.volume_usdc,
+                liquidity_usdc=market.liquidity_usdc,
+                spread_bps=spread_bps,
+                probability_confidence=probability.confidence,
+                resolution_confidence=resolution.confidence,
+                liquidity_confidence=liquidity.confidence,
+                manipulation_safety=1.0 - manipulation.score,
+                news_confidence=news.confidence,
+                social_confidence=social.confidence,
+                wallet_confidence=wallet.confidence,
+                reference_confidence=reference.confidence,
+                market_state_confidence=market_state.confidence,
             )
             reasons = [
                 *order_book_reasons,
+                *market_state.reasons,
                 *resolution.reasons,
                 *liquidity.reasons,
                 *manipulation.reasons,
@@ -126,12 +139,21 @@ class MarketScannerAgent:
                 reasons=reasons,
                 volume_usdc=market.volume_usdc,
                 liquidity_usdc=market.liquidity_usdc,
-                spread_bps=spread_bps,
-                best_bid=order_book.best_bid if order_book else None,
-                best_ask=order_book.best_ask if order_book else None,
-                bid_depth_usdc=order_book.bid_depth_usdc if order_book else 0.0,
-                ask_depth_usdc=order_book.ask_depth_usdc if order_book else 0.0,
-                orderbook_source=order_book.source if order_book else None,
+                spread_bps=market_state.spread_bps,
+                best_bid=analysis_book.best_bid if analysis_book else None,
+                best_ask=analysis_book.best_ask if analysis_book else None,
+                bid_depth_usdc=market_state.bid_depth_usdc,
+                ask_depth_usdc=market_state.ask_depth_usdc,
+                orderbook_source=market_state.orderbook_source,
+                market_state_status=market_state.status,
+                market_state_confidence=market_state.confidence,
+                market_state_venue=market_state.venue,
+                market_state_snapshot_kind=market_state.snapshot_kind,
+                market_state_sequence_status=market_state.sequence_status,
+                market_state_checksum_status=market_state.checksum_status,
+                market_state_freshness_status=market_state.freshness_status,
+                market_state_structure_status=market_state.structure_status,
+                market_state_is_synthetic=market_state.is_synthetic,
                 implied_probability=probability.implied_probability,
                 model_probability=probability.model_probability,
                 edge=probability.edge,
@@ -151,7 +173,7 @@ class MarketScannerAgent:
                     market_id=market.id,
                     question=market.question,
                     side="YES",
-                    reference_price=order_book.mid if order_book else None,
+                    reference_price=analysis_book.mid if analysis_book else None,
                     risk_usdc=risk.max_risk_usdc,
                     model_probability=probability.model_probability,
                     edge=probability.edge,
@@ -172,36 +194,16 @@ class MarketScannerAgent:
             paper_positions=paper_positions,
         )
 
-    async def _load_order_book_with_fallback(
-        self, token_id: str, market_id: str, reasons: list[str]
-    ) -> OrderBookSnapshot | None:
-        try:
-            return await self.polymarket.get_order_book(token_id=token_id, market_id=market_id)
-        except Exception as exc:  # noqa: BLE001 - one market must not crash the whole scan
-            reasons.append(f"orderbook hatasi: {exc.__class__.__name__}")
-
-        midpoint = None
-        spread = None
-        try:
-            midpoint = await self.polymarket.get_midpoint(token_id=token_id)
-        except Exception as exc:  # noqa: BLE001
-            reasons.append(f"midpoint fallback hatasi: {exc.__class__.__name__}")
-
-        try:
-            spread = await self.polymarket.get_spread(token_id=token_id)
-        except Exception as exc:  # noqa: BLE001
-            reasons.append(f"spread fallback hatasi: {exc.__class__.__name__}")
-
-        snapshot = self.polymarket.snapshot_from_mid_and_spread(
-            token_id=token_id, market_id=market_id, midpoint=midpoint, spread=spread
-        )
-        if snapshot is not None:
-            snapshot.source = "midpoint_spread_fallback"
-            reasons.append("orderbook yerine midpoint/spread fallback kullanildi")
-        return snapshot
+    def _market_state_decision(self, validation: MarketStateValidation) -> Decision:
+        if not validation.ok:
+            return Decision.REJECT
+        if validation.status == "degraded":
+            return Decision.WATCH
+        return Decision.APPROVE
 
     def _combine_decisions(
         self,
+        market_state_decision: Decision,
         risk_decision: Decision,
         resolution_decision: Decision,
         liquidity_decision: Decision,
@@ -213,6 +215,7 @@ class MarketScannerAgent:
         probability_confidence: float,
     ) -> Decision:
         hard_decisions = (
+            market_state_decision,
             risk_decision,
             resolution_decision,
             liquidity_decision,
@@ -230,6 +233,7 @@ class MarketScannerAgent:
 
     def _score_market(
         self,
+        *,
         volume_usdc: float,
         liquidity_usdc: float,
         spread_bps: float | None,
@@ -241,6 +245,7 @@ class MarketScannerAgent:
         social_confidence: float,
         wallet_confidence: float,
         reference_confidence: float,
+        market_state_confidence: float,
     ) -> float:
         spread_penalty = (spread_bps or 10_000.0) / 10_000.0
         quality_multiplier = max(
@@ -254,7 +259,8 @@ class MarketScannerAgent:
                 + social_confidence
                 + wallet_confidence
                 + reference_confidence
+                + market_state_confidence
             )
-            / 8,
+            / 9,
         )
         return ((volume_usdc * 0.6 + liquidity_usdc * 0.4) / (1.0 + spread_penalty)) * quality_multiplier
