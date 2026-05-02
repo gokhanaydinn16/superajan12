@@ -33,6 +33,17 @@ from superajan12.safety import get_safety_controller
 from superajan12.secrets import EnvSecretManager
 from superajan12.storage import SQLiteStore
 
+MICRO_LIVE_SCOPE = "micro_live"
+LIVE_EXECUTION_ACK_SCOPE = "live_execution"
+MICRO_LIVE_CHECKLIST_ITEMS = (
+    ("approved_model", "Approved model exists for live gate review."),
+    ("strategy_score_positive", "Latest strategy score remains positive."),
+    ("sample_size_ready", "Sample-size readiness threshold is met."),
+    ("secrets_ready", "Required live execution secrets are present."),
+    ("reconciliation_tested", "Reconciliation checks have been exercised."),
+    ("manual_approval_tested", "Manual approval process has been acknowledged by an operator."),
+)
+
 
 def create_backend_app() -> FastAPI:
     app = FastAPI(title="SuperAjan12 Backend", version="0.2.0")
@@ -285,9 +296,9 @@ def create_backend_app() -> FastAPI:
     @app.get("/execution/status")
     def execution_status() -> dict[str, Any]:
         settings = ensure_runtime_paths()
+        store = SQLiteStore(settings.sqlite_path)
         safety = get_safety_controller().state()
-        approval_gate = ManualApprovalGate()
-        pending_ticket = approval_gate.request("live_execution", "desktop execution center preview")
+        strategy_payload = _build_strategy_payload(store=store, limit=20)
         required_secret_names = (
             "SUPERAJAN12_LIVE_API_KEY",
             "SUPERAJAN12_LIVE_API_SECRET",
@@ -295,25 +306,41 @@ def create_backend_app() -> FastAPI:
         secret_manager = EnvSecretManager()
         secret_refs = [secret_manager.has_secret(name) for name in required_secret_names]
         secrets_ready = all(secret.present for secret in secret_refs)
-        guard = ExecutionGuard(approval_gate).can_execute(
-            mode=settings.mode,
-            safety_state=safety,
-            approval_ticket=pending_ticket,
-            secrets_ready=secrets_ready,
-        )
-        local_open_positions = len(SQLiteStore(settings.sqlite_path).list_open_positions())
+        local_open_positions = len(store.list_open_positions())
         reconciliation = ReconciliationAgent().compare_counts(
             local_open_positions=local_open_positions,
             external_open_positions=local_open_positions,
+        )
+        readiness = _build_micro_live_readiness(
+            store=store,
+            strategy_payload=strategy_payload,
+            secrets_ready=secrets_ready,
+            reconciliation=reconciliation,
+        )
+        approval_gate = ManualApprovalGate()
+        approval_ticket = approval_gate.request("live_execution", "desktop execution center preview")
+        latest_ack = readiness["operator_ack"]
+        if latest_ack and bool(latest_ack.get("acknowledged")):
+            approval_ticket = approval_gate.approve(
+                approval_ticket,
+                approved_by=str(latest_ack.get("acknowledged_by") or "operator"),
+            )
+        guard = ExecutionGuard(approval_gate).can_execute(
+            mode=settings.mode,
+            safety_state=safety,
+            approval_ticket=approval_ticket,
+            secrets_ready=secrets_ready,
         )
         payload = {
             "mode": settings.mode,
             "live_trading": "disabled",
             "approval": {
                 "required": True,
-                "approved": False,
-                "action": pending_ticket.action,
-                "reason": pending_ticket.reason,
+                "approved": approval_ticket.approved,
+                "action": approval_ticket.action,
+                "reason": approval_ticket.reason,
+                "approved_by": approval_ticket.approved_by,
+                "operator_ack": latest_ack,
             },
             "secrets": {
                 "ready": secrets_ready,
@@ -328,6 +355,7 @@ def create_backend_app() -> FastAPI:
                 "allowed": guard.allowed,
                 "reasons": list(guard.reasons),
             },
+            "micro_live_readiness": readiness,
             "dry_run_order_supported": True,
             "dry_run_preview": _build_dry_run_preview(guard),
         }
@@ -797,6 +825,73 @@ def _recommended_model_action(status: str, ready: bool, next_statuses: tuple[str
     if status == "approved":
         return "Monitor live guard readiness or retire if score quality slips."
     return "Review strategy lifecycle state."
+
+
+def _build_micro_live_readiness(
+    *,
+    store: SQLiteStore,
+    strategy_payload: dict[str, Any],
+    secrets_ready: bool,
+    reconciliation: Any,
+) -> dict[str, Any]:
+    strategy_summary = strategy_payload.get("summary") if isinstance(strategy_payload.get("summary"), dict) else {}
+    latest_score = strategy_payload.get("scores", [None])[0] if strategy_payload.get("scores") else None
+    latest_ack = store.latest_operator_acknowledgement(LIVE_EXECUTION_ACK_SCOPE)
+    derived_items = {
+        "approved_model": {
+            "label": "Approved model exists for live gate review.",
+            "passed": int(strategy_summary.get("approved_count") or 0) > 0,
+            "detail": f"approved_count={strategy_summary.get('approved_count', 0)}",
+        },
+        "strategy_score_positive": {
+            "label": "Latest strategy score remains positive.",
+            "passed": bool(latest_score) and float((latest_score or {}).get("score") or 0.0) > 0,
+            "detail": "no strategy score recorded" if not latest_score else f"latest_score={float((latest_score or {}).get('score') or 0.0):.4f}",
+        },
+        "sample_size_ready": {
+            "label": "Sample-size readiness threshold is met.",
+            "passed": bool(latest_score) and int((latest_score or {}).get("sample_count") or 0) >= 100,
+            "detail": "no strategy score recorded" if not latest_score else f"sample_count={int((latest_score or {}).get('sample_count') or 0)}",
+        },
+        "secrets_ready": {
+            "label": "Required live execution secrets are present.",
+            "passed": secrets_ready,
+            "detail": "live secrets present" if secrets_ready else "missing one or more required live secrets",
+        },
+        "reconciliation_tested": {
+            "label": "Reconciliation checks have been exercised.",
+            "passed": bool(getattr(reconciliation, "ok", False)),
+            "detail": " | ".join(getattr(reconciliation, "reasons", ())),
+        },
+        "manual_approval_tested": {
+            "label": "Manual approval process has been acknowledged by an operator.",
+            "passed": bool(latest_ack and latest_ack.get("acknowledged")),
+            "detail": "no operator acknowledgement saved" if not latest_ack else str(latest_ack.get("note") or "operator acknowledgement recorded"),
+        },
+    }
+    for item_key, label in MICRO_LIVE_CHECKLIST_ITEMS:
+        derived = derived_items[item_key]
+        store.set_readiness_item(
+            scope=MICRO_LIVE_SCOPE,
+            item_key=item_key,
+            label=label,
+            passed=bool(derived["passed"]),
+            detail=str(derived["detail"]),
+            updated_by="system",
+        )
+    items = store.list_readiness_items(MICRO_LIVE_SCOPE)
+    passed_count = sum(1 for item in items if bool(item.get("passed")))
+    total_count = len(items)
+    blocked_items = [item for item in items if not bool(item.get("passed"))]
+    return {
+        "scope": MICRO_LIVE_SCOPE,
+        "items": items,
+        "passed_count": passed_count,
+        "total_count": total_count,
+        "ready": total_count > 0 and passed_count == total_count,
+        "blocked_items": blocked_items,
+        "operator_ack": latest_ack,
+    }
 
 
 def _build_risk_signals(
