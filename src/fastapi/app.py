@@ -15,6 +15,15 @@ def Query(default: Any = ..., ge: Any = None, le: Any = None) -> QueryValue:
     return QueryValue(default=default, ge=ge, le=le)
 
 
+@dataclass
+class HTTPException(Exception):
+    status_code: int
+    detail: Any = None
+
+    def __str__(self) -> str:
+        return str(self.detail)
+
+
 class WebSocketDisconnect(Exception):
     pass
 
