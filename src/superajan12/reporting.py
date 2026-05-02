@@ -76,7 +76,11 @@ class Reporter:
                         """
                         SELECT market_id, question, decision, score, volume_usdc, liquidity_usdc,
                                spread_bps, best_bid, best_ask, bid_depth_usdc, ask_depth_usdc,
-                               orderbook_source, implied_probability, model_probability, edge,
+                               orderbook_source, market_state_status, market_state_confidence,
+                               market_state_venue, market_state_snapshot_kind,
+                               market_state_sequence_status, market_state_checksum_status,
+                               market_state_freshness_status, market_state_structure_status,
+                               market_state_is_synthetic, implied_probability, model_probability, edge,
                                resolution_confidence, liquidity_confidence, manipulation_risk_score,
                                news_confidence, social_confidence, smart_wallet_confidence,
                                reference_confidence, suggested_paper_risk_usdc
@@ -97,7 +101,11 @@ class Reporter:
                         """
                         SELECT market_id, question, decision, score, volume_usdc, liquidity_usdc,
                                spread_bps, best_bid, best_ask, bid_depth_usdc, ask_depth_usdc,
-                               orderbook_source, implied_probability, model_probability, edge,
+                               orderbook_source, market_state_status, market_state_confidence,
+                               market_state_venue, market_state_snapshot_kind,
+                               market_state_sequence_status, market_state_checksum_status,
+                               market_state_freshness_status, market_state_structure_status,
+                               market_state_is_synthetic, implied_probability, model_probability, edge,
                                resolution_confidence, liquidity_confidence, manipulation_risk_score,
                                news_confidence, social_confidence, smart_wallet_confidence,
                                reference_confidence, suggested_paper_risk_usdc
@@ -107,6 +115,9 @@ class Reporter:
                         """,
                         (limit,),
                     ).fetchall()
-                return [dict(row) for row in rows]
+                items = [dict(row) for row in rows]
+                for item in items:
+                    item["market_state_is_synthetic"] = bool(item.get("market_state_is_synthetic"))
+                return items
         except sqlite3.OperationalError:
             return []
