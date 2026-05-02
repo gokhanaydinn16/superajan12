@@ -40,7 +40,14 @@ def test_capital_limit_engine_blocks_large_single_trade() -> None:
 
 def test_live_connector_blocks_when_guard_rejects() -> None:
     connector = LiveExecutionConnector()
-    guard = ExecutionDecision(allowed=False, reasons=("blocked",))
+    guard = ExecutionDecision(
+        allowed=False,
+        reasons=("blocked",),
+        vetoes=("blocked",),
+        stale_data_locked=False,
+        hard_position_cap_hit=False,
+        cancel_on_disconnect_required=True,
+    )
 
     with pytest.raises(RuntimeError):
         connector.prepare_order(guard, market_id="m1", side="YES", price=0.5, size=10)
@@ -48,7 +55,14 @@ def test_live_connector_blocks_when_guard_rejects() -> None:
 
 def test_live_connector_prepares_dry_run_order_when_guard_allows() -> None:
     connector = LiveExecutionConnector()
-    guard = ExecutionDecision(allowed=True, reasons=("all gates passed",))
+    guard = ExecutionDecision(
+        allowed=True,
+        reasons=("all gates passed",),
+        vetoes=(),
+        stale_data_locked=False,
+        hard_position_cap_hit=False,
+        cancel_on_disconnect_required=True,
+    )
 
     order = connector.prepare_order(guard, market_id="m1", side="YES", price=0.5, size=10)
 

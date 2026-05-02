@@ -461,7 +461,7 @@ def execution_check(args: argparse.Namespace) -> None:
         approval_ticket=ticket,
         secrets_ready=args.secrets_ready,
     )
-    console.print({"allowed": decision.allowed, "reasons": decision.reasons})
+    console.print({"allowed": decision.allowed, "reasons": decision.reasons, "vetoes": decision.vetoes})
     if not decision.allowed:
         raise SystemExit(1)
 
@@ -470,6 +470,10 @@ def prepare_order(args: argparse.Namespace) -> None:
     guard = ExecutionDecision(
         allowed=args.force_guard,
         reasons=("forced dry-run guard for local test",) if args.force_guard else ("guard not forced",),
+        vetoes=() if args.force_guard else ("guard not forced",),
+        stale_data_locked=False,
+        hard_position_cap_hit=False,
+        cancel_on_disconnect_required=True,
     )
     order = LiveExecutionConnector().prepare_order(
         guard_decision=guard,

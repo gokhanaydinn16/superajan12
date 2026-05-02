@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     max_reference_price_deviation_bps: float = Field(
         default=75.0, validation_alias="MAX_REFERENCE_PRICE_DEVIATION_BPS"
     )
+    live_stale_data_max_seconds: float = Field(
+        default=15.0, validation_alias="LIVE_STALE_DATA_MAX_SECONDS"
+    )
+    live_disconnect_grace_seconds: float = Field(
+        default=5.0, validation_alias="LIVE_DISCONNECT_GRACE_SECONDS"
+    )
+    live_max_open_positions: int = Field(default=3, validation_alias="LIVE_MAX_OPEN_POSITIONS")
+    live_max_position_notional_usdc: float = Field(
+        default=25.0, validation_alias="LIVE_MAX_POSITION_NOTIONAL_USDC"
+    )
+    live_cancel_on_disconnect_required: bool = Field(
+        default=True, validation_alias="LIVE_CANCEL_ON_DISCONNECT_REQUIRED"
+    )
 
     audit_log_path: Path = Field(default=Path("data/audit/events.jsonl"), validation_alias="AUDIT_LOG_PATH")
     sqlite_path: Path = Field(default=Path("data/superajan12.sqlite3"), validation_alias="SQLITE_PATH")

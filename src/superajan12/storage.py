@@ -169,6 +169,25 @@ class SQLiteStore:
                     acknowledged_by TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS execution_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL UNIQUE,
+                    connected INTEGER NOT NULL DEFAULT 1,
+                    cancel_on_disconnect_supported INTEGER NOT NULL DEFAULT 0,
+                    cancel_on_disconnect_armed INTEGER NOT NULL DEFAULT 0,
+                    stale_data_locked INTEGER NOT NULL DEFAULT 0,
+                    disconnect_reason TEXT,
+                    open_order_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS execution_veto_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL,
+                    veto_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             for table, column, ddl in (
@@ -197,6 +216,7 @@ class SQLiteStore:
                 ("market_scores", "reference_confidence", "REAL"),
                 ("paper_trade_ideas", "model_probability", "REAL"),
                 ("paper_trade_ideas", "edge", "REAL"),
+                ("execution_sessions", "open_order_count", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 self._ensure_column(conn, table, column, ddl)
 
@@ -496,6 +516,107 @@ class SQLiteStore:
                 return None
             result = dict(row)
             result["acknowledged"] = bool(result.get("acknowledged"))
+            return result
+
+    def save_execution_session(
+        self,
+        *,
+        session_id: str,
+        connected: bool,
+        cancel_on_disconnect_supported: bool,
+        cancel_on_disconnect_armed: bool,
+        stale_data_locked: bool,
+        disconnect_reason: str | None,
+        open_order_count: int,
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_sessions (
+                    session_id, connected, cancel_on_disconnect_supported,
+                    cancel_on_disconnect_armed, stale_data_locked, disconnect_reason,
+                    open_order_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    connected = excluded.connected,
+                    cancel_on_disconnect_supported = excluded.cancel_on_disconnect_supported,
+                    cancel_on_disconnect_armed = excluded.cancel_on_disconnect_armed,
+                    stale_data_locked = excluded.stale_data_locked,
+                    disconnect_reason = excluded.disconnect_reason,
+                    open_order_count = excluded.open_order_count,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    session_id,
+                    1 if connected else 0,
+                    1 if cancel_on_disconnect_supported else 0,
+                    1 if cancel_on_disconnect_armed else 0,
+                    1 if stale_data_locked else 0,
+                    disconnect_reason,
+                    open_order_count,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM execution_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("execution session save failed")
+            return int(row[0])
+
+    def latest_execution_session(self) -> dict[str, object] | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, session_id, connected, cancel_on_disconnect_supported,
+                       cancel_on_disconnect_armed, stale_data_locked, disconnect_reason,
+                       open_order_count, updated_at
+                FROM execution_sessions
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            for key in (
+                "connected",
+                "cancel_on_disconnect_supported",
+                "cancel_on_disconnect_armed",
+                "stale_data_locked",
+            ):
+                result[key] = bool(result.get(key))
+            return result
+
+    def record_execution_veto(self, *, scope: str, vetoes: tuple[str, ...] | list[str]) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO execution_veto_events (scope, veto_json)
+                VALUES (?, ?)
+                """,
+                (scope, json.dumps(list(vetoes), ensure_ascii=False)),
+            )
+            return int(cursor.lastrowid)
+
+    def latest_execution_veto(self, scope: str) -> dict[str, object] | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, scope, veto_json, created_at
+                FROM execution_veto_events
+                WHERE scope = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (scope,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["vetoes"] = json.loads(str(result.pop("veto_json") or "[]"))
             return result
 
     def _insert_scores(self, conn: sqlite3.Connection, scan_id: int, scores: Iterable[MarketScore]) -> None:
