@@ -5,7 +5,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-from .app import FastAPI, QueryValue
+from .app import FastAPI, HTTPException, QueryValue
 from .responses import HTMLResponse
 
 
@@ -34,9 +34,13 @@ class TestClient:
     def _request(self, method: str, path: str, params: dict[str, Any] | None = None) -> _Response:
         route = next(item for item in self.app.routes if item.method == method and item.path == path)
         kwargs = _build_kwargs(route.endpoint, params or {})
-        result = route.endpoint(**kwargs)
-        if inspect.isawaitable(result):
-            result = asyncio.run(result)
+        try:
+            result = route.endpoint(**kwargs)
+            if inspect.isawaitable(result):
+                result = asyncio.run(result)
+        except HTTPException as exc:
+            payload = {"detail": exc.detail}
+            return _Response(status_code=exc.status_code, _body=payload, text=str(exc.detail))
         if route.response_class is HTMLResponse:
             return _Response(status_code=200, _body=result, text=str(result))
         return _Response(status_code=200, _body=result, text=str(result))
