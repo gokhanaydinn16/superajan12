@@ -70,6 +70,22 @@ class CryptoReferenceAgent:
             coinbase_product_id="SOL-USD",
         )
 
+    async def check_xrp(self) -> ReferenceCheck:
+        return await self.check(
+            canonical_symbol="XRP",
+            binance_symbol="XRPUSDT",
+            okx_inst_id="XRP-USDT",
+            coinbase_product_id="XRP-USD",
+        )
+
+    async def check_doge(self) -> ReferenceCheck:
+        return await self.check(
+            canonical_symbol="DOGE",
+            binance_symbol="DOGEUSDT",
+            okx_inst_id="DOGE-USDT",
+            coinbase_product_id="DOGE-USD",
+        )
+
     async def check(
         self,
         canonical_symbol: str,
