@@ -108,6 +108,14 @@ export type SystemHealthPayload = {
   sources: Record<string, unknown>;
 };
 
+export type StrategyTransitionPayload = {
+  status: "candidate" | "shadow" | "approved" | "retired";
+  notes?: string;
+  model_name?: string;
+  model_version?: string;
+  changed_by?: string;
+};
+
 const FALLBACK_STATUS: DesktopBackendStatus = {
   running: false,
   url: "http://127.0.0.1:8000",
@@ -154,7 +162,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   try {
     response = await fetch(`${backend.url}${path}`, init);
-  } catch (error) {
+  } catch {
     backend = await refreshBackendStatus();
     response = await fetch(`${backend.url}${path}`, init);
   }
@@ -239,6 +247,14 @@ export function runScan(limit: number) {
 
 export function verifyEndpoints() {
   return request<Record<string, unknown>>("/verify-endpoints", { method: "POST" });
+}
+
+export function transitionStrategyModel(payload: StrategyTransitionPayload) {
+  return request<Record<string, unknown>>("/strategy/models/transition", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function enableSafeMode(reason: string) {
