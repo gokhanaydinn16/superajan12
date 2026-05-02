@@ -79,6 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     model_history_parser = subparsers.add_parser("model-history", help="List model status transition history")
     model_history_parser.add_argument("--limit", type=int, default=20)
 
+    model_policy_parser = subparsers.add_parser("model-policy", help="Evaluate stored model promotion policy checks")
+    model_policy_parser.add_argument("--limit", type=int, default=20)
+
     reconcile = subparsers.add_parser("reconcile", help="Compare local and external open position counts")
     reconcile.add_argument("--local", type=int, required=True)
     reconcile.add_argument("--external", type=int, required=True)
@@ -336,11 +339,22 @@ def strategy_list(limit: int) -> None:
     console.print(table)
 
 
+def _latest_strategy_score_by_name(limit: int = 100) -> dict[str, dict[str, object]]:
+    rows = SQLiteStore(get_settings().sqlite_path).list_strategy_scores(limit=limit)
+    latest: dict[str, dict[str, object]] = {}
+    for row in rows:
+        name = str(row.get("strategy_name") or "")
+        if name and name not in latest:
+            latest[name] = row
+    return latest
+
+
 def model_register(args: argparse.Namespace) -> None:
     registry = ModelRegistry()
     version = ModelVersion(name=args.name, version=args.version, status=args.status, notes=args.notes)
     registry.validate(version)
-    model_id = SQLiteStore(get_settings().sqlite_path).save_model_version(
+    store = SQLiteStore(get_settings().sqlite_path)
+    model_id = store.save_model_version(
         name=version.name,
         version=version.version,
         status=version.status,
@@ -348,11 +362,15 @@ def model_register(args: argparse.Namespace) -> None:
         change_reason=args.change_reason,
         changed_by="cli",
     )
-    policy = registry.evaluate_promotion(version)
+    latest_score = _latest_strategy_score_by_name().get(version.name)
+    policy = registry.evaluate_promotion(version, latest_score=latest_score)
     console.print(f"[green]Saved model_version_id={model_id}[/green]")
     console.print(f"can_trade_live={registry.can_trade_live(version)}")
     console.print(f"next_statuses={policy.next_statuses}")
     console.print(f"promotion_ready={policy.ready}")
+    if latest_score is not None:
+        console.print(f"latest_score={latest_score.get('score')}")
+        console.print(f"latest_sample_count={latest_score.get('sample_count')}")
     for reason in policy.reasons:
         console.print(f"- {reason}")
 
@@ -374,6 +392,36 @@ def model_history(limit: int) -> None:
         table.add_column(column)
     for row in rows:
         table.add_row(*(str(row.get(column)) for column in ("id", "name", "version", "from_status", "to_status", "reason", "changed_by", "changed_at")))
+    console.print(table)
+
+
+def model_policy(limit: int) -> None:
+    store = SQLiteStore(get_settings().sqlite_path)
+    registry = ModelRegistry()
+    latest_scores = _latest_strategy_score_by_name(limit=max(limit * 3, 20))
+    models = store.list_model_versions(limit=limit)
+    table = Table(title="Model Promotion Policy")
+    for column in ("name", "version", "status", "ready", "next_statuses", "score", "sample_count", "reasons"):
+        table.add_column(column)
+    for row in models:
+        version = ModelVersion(
+            name=str(row.get("name") or ""),
+            version=str(row.get("version") or ""),
+            status=str(row.get("status") or ""),
+            notes=None if row.get("notes") is None else str(row.get("notes")),
+        )
+        latest_score = latest_scores.get(version.name)
+        policy = registry.evaluate_promotion(version, latest_score=latest_score)
+        table.add_row(
+            version.name,
+            version.version,
+            version.status,
+            "yes" if policy.ready else "no",
+            ", ".join(policy.next_statuses) if policy.next_statuses else "-",
+            "-" if latest_score is None else str(latest_score.get("score")),
+            "-" if latest_score is None else str(latest_score.get("sample_count")),
+            " | ".join(policy.reasons),
+        )
     console.print(table)
 
 
@@ -455,6 +503,8 @@ def main() -> None:
         model_list(limit=args.limit)
     elif args.command == "model-history":
         model_history(limit=args.limit)
+    elif args.command == "model-policy":
+        model_policy(limit=args.limit)
     elif args.command == "reconcile":
         reconcile(args)
     elif args.command == "capital-check":
