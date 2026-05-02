@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -24,15 +25,20 @@ def main() -> int:
             if not callable(candidate):
                 continue
             count += 1
+            fixtures = _build_fixtures(candidate)
             try:
                 if inspect.iscoroutinefunction(candidate):
-                    asyncio.run(candidate(**_build_fixtures(candidate)))
+                    asyncio.run(candidate(**fixtures))
                 else:
-                    candidate(**_build_fixtures(candidate))
+                    candidate(**fixtures)
             except BaseException as exc:
                 failures.append((f"{path.name}::{name}", exc))
                 if not quiet:
                     traceback.print_exc()
+            finally:
+                monkeypatch = fixtures.get("monkeypatch")
+                if isinstance(monkeypatch, _MonkeyPatch):
+                    monkeypatch.undo()
 
     if failures:
         for label, exc in failures:
@@ -61,7 +67,29 @@ def _build_fixtures(func) -> dict[str, object]:
             tempdir = TemporaryDirectory()
             fixtures[name] = Path(tempdir.name)
             _TEMP_DIRS.append(tempdir)
+        elif name == "monkeypatch":
+            fixtures[name] = _MonkeyPatch()
     return fixtures
+
+
+class _MonkeyPatch:
+    def __init__(self) -> None:
+        self._env_changes: list[tuple[str, str | None, bool]] = []
+
+    def setenv(self, name: str, value: str) -> None:
+        existed = name in os.environ
+        previous = os.environ.get(name)
+        self._env_changes.append((name, previous, existed))
+        os.environ[name] = value
+
+    def undo(self) -> None:
+        while self._env_changes:
+            name, previous, existed = self._env_changes.pop()
+            if existed:
+                assert previous is not None
+                os.environ[name] = previous
+            else:
+                os.environ.pop(name, None)
 
 
 _TEMP_DIRS: list[TemporaryDirectory] = []

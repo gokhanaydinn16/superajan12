@@ -1,20 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Brain, Database, Gauge, LineChart, Radar, Shield, WalletCards, Zap } from "lucide-react";
 import {
+  acknowledgeExecution,
   BackendEvent,
   DashboardPayload,
+  ExecutionStatusPayload,
   MarketsPayload,
+  RiskStatusPayload,
   SourceHealth,
+  StrategyScoresPayload,
   connectEventStream,
   getDashboard,
   getEvents,
+  getExecutionStatus,
   getMarkets,
+  getRiskStatus,
   getSources,
+  getStrategyScores,
   runScan,
+  transitionStrategyModel,
   verifyEndpoints,
 } from "./api";
 
 type LogItem = { time: string; message: string };
+type TransitionState = "candidate" | "shadow" | "approved" | "retired";
 
 const nav = [
   ["Command", Activity],
@@ -35,9 +44,9 @@ function fmt(value: unknown, digits = 2) {
 }
 
 function statusClass(status: string) {
-  if (status === "live") return "good";
-  if (status === "stale" || status === "loading") return "warn";
-  if (status === "offline" || status === "error") return "bad";
+  if (status === "live" || status === "clear" || status === "approved") return "good";
+  if (status === "stale" || status === "loading" || status === "monitor" || status === "tight" || status === "shadow") return "warn";
+  if (status === "offline" || status === "error" || status === "degraded" || status === "blocked") return "bad";
   return "muted-pill";
 }
 
@@ -60,22 +69,58 @@ function eventToLog(event: BackendEvent) {
   return `${event.type} ${JSON.stringify(event.payload)}`;
 }
 
+function compactTime(value: unknown) {
+  if (!value || typeof value !== "string") return "No timestamp";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function nextStrategyAction(status: string, liveEligibleCount: number) {
+  if (liveEligibleCount > 0) return "Manual approval and execution secrets are the next gate.";
+  if (status === "shadow") return "Collect more shadow outcomes before requesting approval.";
+  if (status === "candidate") return "Promote the strongest candidate into shadow validation.";
+  if (status === "retired") return "Register a replacement candidate before the next scan cycle.";
+  return "Register the first model version to start the promotion ladder.";
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 export default function App() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [markets, setMarkets] = useState<MarketsPayload | null>(null);
+  const [risk, setRisk] = useState<RiskStatusPayload | null>(null);
+  const [execution, setExecution] = useState<ExecutionStatusPayload | null>(null);
+  const [strategy, setStrategy] = useState<StrategyScoresPayload | null>(null);
   const [sources, setSources] = useState<SourceHealth[]>([]);
   const [limit, setLimit] = useState(25);
   const [busy, setBusy] = useState(false);
+  const [strategyBusy, setStrategyBusy] = useState(false);
   const [eventState, setEventState] = useState("connecting");
   const [logs, setLogs] = useState<LogItem[]>([{ time: new Date().toLocaleTimeString(), message: "Desktop Command Center ready" }]);
+  const [operatorNote, setOperatorNote] = useState("");
+  const [executionNote, setExecutionNote] = useState("");
 
   const addLog = (message: string) => setLogs((items) => [{ time: new Date().toLocaleTimeString(), message }, ...items].slice(0, 120));
 
   async function refresh() {
     try {
-      const [dash, marketsPayload, sourcePayload, events] = await Promise.all([getDashboard(), getMarkets(), getSources(), getEvents(20)]);
+      const [dash, marketsPayload, riskPayload, executionPayload, strategyPayload, sourcePayload, events] = await Promise.all([
+        getDashboard(),
+        getMarkets(),
+        getRiskStatus(),
+        getExecutionStatus(),
+        getStrategyScores(),
+        getSources(),
+        getEvents(20),
+      ]);
       setDashboard(dash);
       setMarkets(marketsPayload);
+      setRisk(riskPayload);
+      setExecution(executionPayload);
+      setStrategy(strategyPayload);
       setSources(sourcePayload.sources);
       if (events.events.length > 0) {
         setLogs((items) => [
@@ -113,6 +158,51 @@ export default function App() {
       addLog(`Endpoint verification failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function applyStrategyTransition(status: TransitionState) {
+    setStrategyBusy(true);
+    const model = strategy?.models?.[0];
+    const note = operatorNote.trim();
+    const modelName = stringField(model?.name);
+    const modelVersion = stringField(model?.version);
+
+    addLog(`Operator transition requested ${status}${modelVersion ? ` for ${modelVersion}` : ""}`);
+
+    try {
+      const result = await transitionStrategyModel({
+        status,
+        notes: note || undefined,
+        model_name: modelName,
+        model_version: modelVersion,
+      });
+      addLog(`Operator transition completed ${JSON.stringify(result)}`);
+      setOperatorNote("");
+      await refresh();
+    } catch (error) {
+      addLog(`Operator transition failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStrategyBusy(false);
+    }
+  }
+
+  async function acknowledgeExecutionReadiness() {
+    addLog("Operator execution acknowledgement requested");
+    setStrategyBusy(true);
+    try {
+      const result = await acknowledgeExecution({
+        acknowledged: true,
+        note: executionNote.trim() || undefined,
+        acknowledged_by: "desktop_operator",
+      });
+      addLog(`Execution acknowledgement saved ${JSON.stringify(result)}`);
+      setExecutionNote("");
+      await refresh();
+    } catch (error) {
+      addLog(`Execution acknowledgement failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStrategyBusy(false);
     }
   }
 
@@ -154,7 +244,28 @@ export default function App() {
   const marketSummary = markets?.market_summary || {};
   const referenceSources = markets?.reference_sources || [];
   const latestScan = markets?.latest_scan || null;
+  const riskSignals = risk?.risk_signals || {};
+  const sourceHealthGate = risk?.source_health_gate || {};
+  const strategyModels = strategy?.models || [];
+  const strategyScores = strategy?.scores || [];
+  const liveEligibleModels = strategy?.live_eligible_models || [];
+  const readinessChecklist = execution?.micro_live_readiness?.items || [];
+  const readinessBlockedItems = execution?.micro_live_readiness?.blocked_items || [];
+  const operatorAck = execution?.micro_live_readiness?.operator_ack || null;
   const onlineSources = useMemo(() => sources.filter((source) => source.status === "live").length, [sources]);
+  const strategyStatusCounts = useMemo(() => {
+    return strategyModels.reduce<Record<string, number>>((acc, row) => {
+      const key = String(row.status || "unknown");
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+  }, [strategyModels]);
+  const latestModel = strategyModels[0] || null;
+  const latestStrategyScore = strategyScores[0] || null;
+  const canTransitionModel = Boolean(latestModel);
+  const readinessTone = liveEligibleModels.length > 0 ? "good" : latestModel && latestModel.status === "shadow" ? "warn" : "muted-pill";
+  const readinessLabel = liveEligibleModels.length > 0 ? "promotion ready" : latestModel ? String(latestModel.status || "watching") : "awaiting model";
+  const readinessCopy = nextStrategyAction(String(latestModel?.status || ""), liveEligibleModels.length);
 
   return (
     <div className="shell">
@@ -213,7 +324,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="content-grid">
+        <section className="content-grid risk-grid">
           <div className="panel large">
             <div className="panel-head">
               <div>
@@ -284,6 +395,40 @@ export default function App() {
           </div>
 
           <div className="panel">
+            <div className="panel-head"><h2>Risk Center</h2><Shield size={18} /></div>
+            <div className="summary-strip summary-strip-two">
+              <SummaryCard title="Open Risk" value={fmt(risk?.capital?.current_open_risk_usdc, 1)} sub="current exposure" />
+              <SummaryCard title="Risk Cap" value={fmt(risk?.capital?.max_allowed_risk_usdc, 1)} sub="remaining room" />
+            </div>
+            <div className="source-list source-stack compact-gap">
+              {Object.entries(riskSignals).map(([name, signal]) => (
+                <div className="source-row" key={name}>
+                  <div className="source-body">
+                    <strong>{name.replace(/_/g, " ")}</strong>
+                    <div className="source-sub">{Array.isArray(signal.reasons) ? signal.reasons.join(" | ") : fmt(signal.reasons, 0)}</div>
+                  </div>
+                  <div className="source-meta vertical-meta">
+                    <span className={`pill ${statusClass(String(signal.status || "unknown"))}`}>{fmt(signal.status, 0)}</span>
+                    <span className="source-latency">confidence {fmt(signal.confidence, 2)}</span>
+                    {signal.value !== null && signal.value !== undefined ? <span className="source-latency">value {fmt(signal.value, 2)}</span> : null}
+                  </div>
+                </div>
+              ))}
+              <div className="source-row">
+                <div className="source-body">
+                  <strong>source health gate</strong>
+                  <div className="source-sub">degraded {fmt(sourceHealthGate.degraded_source_count, 0)} | breakers {fmt(sourceHealthGate.open_circuit_breakers, 0)}</div>
+                </div>
+                <div className="source-meta vertical-meta">
+                  <span className={`pill ${Boolean(sourceHealthGate.allowed) ? "good" : "bad"}`}>{Boolean(sourceHealthGate.allowed) ? "clear" : "blocked"}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="content-grid bottom">
+          <div className="panel">
             <div className="panel-head"><h2>Reference Venues</h2><AlertTriangle size={18} /></div>
             <div className="source-list source-stack">
               {referenceSources.map((source) => (
@@ -301,9 +446,6 @@ export default function App() {
               ))}
             </div>
           </div>
-        </section>
-
-        <section className="content-grid bottom">
           <div className="panel">
             <div className="panel-head"><h2>Research Center</h2><span className="pill muted-pill">no fake data</span></div>
             <div className="empty-box">Research sources are shown as not configured until real providers are connected. No demo headlines are displayed.</div>
@@ -311,6 +453,95 @@ export default function App() {
           <div className="panel">
             <div className="panel-head"><h2>Wallet Intelligence</h2><span className="pill muted-pill">provider gated</span></div>
             <div className="empty-box">Dune / Nansen / Glassnode adapters require real API access. Wallet feed remains empty until configured.</div>
+          </div>
+          <div className="panel">
+            <div className="panel-head"><h2>Execution Readiness</h2><span className={`pill ${execution?.micro_live_readiness?.ready ? "good" : "warn"}`}>{execution?.micro_live_readiness?.ready ? "ready" : "gated"}</span></div>
+            <div className="summary-strip summary-strip-two">
+              <SummaryCard title="Checklist" value={`${fmt(execution?.micro_live_readiness?.passed_count, 0)}/${fmt(execution?.micro_live_readiness?.total_count, 0)}`} sub="passed items" />
+              <SummaryCard title="Approval" value={operatorAck?.acknowledged ? "acked" : "pending"} sub={operatorAck?.acknowledged_by ? String(operatorAck.acknowledged_by) : "operator gate"} />
+            </div>
+            <div className="source-list compact-gap">
+              {readinessChecklist.length === 0 ? <div className="empty-box">No readiness items recorded yet.</div> : readinessChecklist.slice(0, 6).map((item, index) => (
+                <div className="source-row" key={`${String(item.item_key || "item")}-${index}`}>
+                  <div className="source-body">
+                    <strong>{fmt(item.label, 0)}</strong>
+                    <div className="source-sub">{fmt(item.detail, 0)}</div>
+                  </div>
+                  <div className="source-meta vertical-meta">
+                    <span className={`pill ${item.passed ? "good" : "warn"}`}>{item.passed ? "passed" : "blocked"}</span>
+                    <span className="source-latency">{fmt(item.updated_by, 0)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="execution-ack-card">
+              <div className="mini-section-title">Operator acknowledgement</div>
+              <p className="operator-copy">{operatorAck?.note ? String(operatorAck.note) : readinessBlockedItems.length > 0 ? `Blocked: ${readinessBlockedItems.map((item) => String(item.item_key || "item")).join(", ")}` : "Save an operator acknowledgement when the checklist and manual review are complete."}</p>
+              <div className="operator-note-wrap">
+                <textarea
+                  value={executionNote}
+                  onChange={(event) => setExecutionNote(event.target.value)}
+                  placeholder="Operator note, incident ref, or approval context"
+                />
+              </div>
+              <div className="execution-ack-actions">
+                <button disabled={strategyBusy} onClick={acknowledgeExecutionReadiness}>Acknowledgement Kaydet</button>
+              </div>
+            </div>
+          </div>
+          <div className="panel strategy-panel">
+            <div className="panel-head">
+              <h2>Strategy Console</h2>
+              <div className="top-actions">
+                <span className={`pill ${readinessTone}`}>{readinessLabel}</span>
+                <Radar size={18} />
+              </div>
+            </div>
+            <div className="strategy-banner">
+              <div>
+                <strong>{liveEligibleModels.length > 0 ? "Model promotion path is open" : "Promotion path is still gated"}</strong>
+                <p>{readinessCopy}</p>
+              </div>
+              <div className="strategy-stats">
+                <div>
+                  <span>Live eligible</span>
+                  <strong>{fmt(liveEligibleModels.length, 0)}</strong>
+                </div>
+                <div>
+                  <span>Latest score</span>
+                  <strong>{latestStrategyScore ? fmt(latestStrategyScore.score, 2) : "-"}</strong>
+                </div>
+              </div>
+            </div>
+            <div className="operator-card">
+              <div className="operator-head">
+                <div>
+                  <div className="mini-section-title">Operator controls</div>
+                  <p className="operator-copy">Readiness backend tarafinda uretilir; operator burada son gecisi ve gerekceyi kaydeder.</p>
+                </div>
+                <span className={`pill ${statusClass(String(latestModel?.status || "unknown"))}`}>{fmt(latestModel?.status, 0)}</span>
+              </div>
+              <div className="operator-grid">
+                <div className="operator-actions">
+                  <button disabled={strategyBusy || !canTransitionModel} className="secondary" onClick={() => applyStrategyTransition("candidate")}>Adaya Al</button>
+                  <button disabled={strategyBusy || !canTransitionModel} className="secondary" onClick={() => applyStrategyTransition("shadow")}>Shadowa Gec</button>
+                  <button disabled={strategyBusy || !canTransitionModel} onClick={() => applyStrategyTransition("approved")}>Approve Et</button>
+                  <button disabled={strategyBusy || !canTransitionModel} className="danger" onClick={() => applyStrategyTransition("retired")}>Retire Et</button>
+                </div>
+                <div className="operator-note-wrap">
+                  <textarea
+                    value={operatorNote}
+                    onChange={(event) => setOperatorNote(event.target.value)}
+                    placeholder="Transition note, experiment ID, or approval context"
+                  />
+                  <div className="strategy-footnote">
+                    <strong>Current ladder</strong>
+                    <p>{strategyStatusCounts.candidate || 0} candidate, {strategyStatusCounts.shadow || 0} shadow, {strategyStatusCounts.approved || 0} approved, {strategyStatusCounts.retired || 0} retired.</p>
+                    <p>Last transition: {strategy?.last_transition ? `${fmt(strategy.last_transition.from_status, 0)} -> ${fmt(strategy.last_transition.to_status, 0)} at ${compactTime(strategy.last_transition.changed_at)}` : "none recorded yet"}.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <div className="panel large">
             <div className="panel-head"><h2>Audit / Agent Activity</h2><span className="pill good">live event stream</span></div>

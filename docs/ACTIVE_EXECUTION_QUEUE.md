@@ -73,7 +73,7 @@ This file is the live queue for the 14-item execution wave. "Started" here means
 
 ## 5. Connector hardening
 
-- Status: started
+- Status: materially advanced
 - Evidence:
   - `src/superajan12/health.py`
   - `src/superajan12/connectors/polymarket.py`
@@ -81,13 +81,19 @@ This file is the live queue for the 14-item execution wave. "Started" here means
   - `src/superajan12/connectors/okx.py`
   - `src/superajan12/connectors/coinbase.py`
   - `src/superajan12/connectors/kalshi.py`
+  - `src/superajan12/runtime.py`
+  - `src/superajan12/backend_api.py`
+  - `src/superajan12/reference_status.py`
+  - `tests/test_reference_agent.py`
+  - `tests/test_reference_status.py`
 - Current state:
-  - health model, source status, retries, source snapshot surface exist
-  - deeper timeout, stale-data, rate-limit, circuit-breaker work remains
+  - live Binance, OKX and Coinbase reference checks are now wired into the backend scan flow
+  - backend now exposes `/reference/checks` so operators can inspect cross-venue agreement directly
+  - scan responses now include reference-check summary metadata instead of leaving the venue adapters disconnected from scoring
+  - serialization helpers and unit tests now lock the reference-check payload contract
 - Next move:
-  - add per-connector stale/failure counters
-  - add circuit-breaker state
-  - surface rate-limit and degradation details into `/system/health`
+  - extend the same live reference-check pattern from BTC/ETH/SOL into more symbol families as strategy coverage grows
+  - fold venue disagreement alarms into desktop notification surfaces
 
 ## 6. Research provider adapters
 
@@ -136,18 +142,26 @@ This file is the live queue for the 14-item execution wave. "Started" here means
 
 ## 9. Strategy lifecycle and model promotion
 
-- Status: started
+- Status: materially advanced
 - Evidence:
   - `src/superajan12/model_registry.py`
-  - `src/superajan12/strategy.py`
-  - desktop Strategy view in `apps/desktop/src/App.tsx`
+  - `src/superajan12/storage.py`
+  - `src/superajan12/backend_api.py`
+  - `src/superajan12/cli.py`
+  - `apps/desktop/src/App.tsx`
+  - `tests/test_model_registry.py`
+  - `tests/test_storage_model_history.py`
+  - `tests/test_backend_api.py`
 - Current state:
-  - strategy scores and model versions are visible
-  - full candidate -> shadow -> approved -> retired workflow is partial
+  - candidate -> shadow -> approved -> retired transition policy exists
+  - promotion readiness checks are computed from latest strategy scores
+  - model status history is persisted and exposed in backend/UI
+  - desktop Strategy panel now shows policy checks, recent transitions and next-gate summary
+  - CLI can inspect stored policy state with `model-policy`
 - Next move:
-  - add promotion history and rejection reasons
-  - add transition policy checks
-  - expose promotion state in backend/UI
+  - add explicit operator-driven promotion mutation/command path instead of registration-only transitions
+  - tie promotion checks to sample-size readiness from micro-live checklist
+  - add audit event classes for promotion approvals and rejections
 
 ## 10. Risk model expansion
 

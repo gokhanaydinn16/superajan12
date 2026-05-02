@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -7,8 +8,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
+from superajan12.agents.reference import ReferenceCheck
 from superajan12.approval import ManualApprovalGate
 from superajan12.agents.scanner import MarketScannerAgent
 from superajan12.capital_limits import CapitalLimitEngine
@@ -21,9 +24,11 @@ from superajan12.live_connector import LiveExecutionConnector
 from superajan12.market_state import MarketStateValidator
 from superajan12.model_registry import ModelRegistry, ModelVersion
 from superajan12.reconciliation import ReconciliationAgent
+from superajan12.reference_status import serialize_reference_check, summarize_reference_checks
 from superajan12.reporting import Reporter
 from superajan12.runtime import (
     build_polymarket_client,
+    build_reference_agent,
     build_risk_engine,
     build_scan_response,
     ensure_runtime_paths,
@@ -32,6 +37,31 @@ from superajan12.runtime import (
 from superajan12.safety import get_safety_controller
 from superajan12.secrets import EnvSecretManager
 from superajan12.storage import SQLiteStore
+
+MICRO_LIVE_SCOPE = "micro_live"
+LIVE_EXECUTION_ACK_SCOPE = "live_execution"
+MICRO_LIVE_CHECKLIST_ITEMS = (
+    ("approved_model", "Approved model exists for live gate review."),
+    ("strategy_score_positive", "Latest strategy score remains positive."),
+    ("sample_size_ready", "Sample-size readiness threshold is met."),
+    ("secrets_ready", "Required live execution secrets are present."),
+    ("reconciliation_tested", "Reconciliation checks have been exercised."),
+    ("manual_approval_tested", "Manual approval process has been acknowledged by an operator."),
+)
+
+
+class StrategyTransitionRequest(BaseModel):
+    status: str
+    notes: str | None = None
+    model_name: str | None = None
+    model_version: str | None = None
+    changed_by: str = "desktop_operator"
+
+
+class ExecutionAcknowledgementRequest(BaseModel):
+    acknowledged: bool = True
+    note: str | None = None
+    acknowledged_by: str = "desktop_operator"
 
 
 def create_backend_app() -> FastAPI:
@@ -216,36 +246,85 @@ def create_backend_app() -> FastAPI:
     def strategy_scores(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
-        models = store.list_model_versions(limit=limit)
-        rows = store.list_strategy_scores(limit=limit)
-        payload = {
-            "scores": rows,
-            "models": models,
-            "live_eligible_models": [
-                row
-                for row in models
-                if ModelRegistry().can_trade_live(
-                    ModelVersion(
-                        name=str(row.get("name") or ""),
-                        version=str(row.get("version") or ""),
-                        status=str(row.get("status") or ""),
-                        notes=None if row.get("notes") is None else str(row.get("notes")),
-                    )
-                )
-            ],
-        }
+        payload = _build_strategy_payload(store=store, limit=limit)
         event_bus.publish("strategy.snapshot", payload)
         return payload
 
-    @app.get("/risk/status")
-    def risk_status() -> dict[str, Any]:
+    @app.post("/strategy/models/transition")
+    def transition_strategy_model(request: StrategyTransitionRequest) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
+        target = _resolve_transition_target(
+            store=store,
+            model_name=request.model_name,
+            model_version=request.model_version,
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="model version not found")
+
+        version = ModelVersion(
+            name=str(target.get("name") or ""),
+            version=str(target.get("version") or ""),
+            status=request.status,
+            notes=request.notes,
+        )
+        registry = ModelRegistry()
+        registry.validate(version)
+        policy = registry.evaluate_promotion(
+            version,
+            latest_score=_latest_strategy_score_for(store, version.name),
+            current_status=str(target.get("status") or ""),
+        )
+        if not policy.ready:
+            raise HTTPException(status_code=400, detail={"reasons": list(policy.reasons), "next_statuses": list(policy.next_statuses)})
+
+        previous_status = str(target.get("status") or "")
+        store.save_model_version(
+            name=version.name,
+            version=version.version,
+            status=version.status,
+            notes=version.notes,
+            change_reason=request.notes or f"transitioned from {previous_status} to {version.status}",
+            changed_by=request.changed_by,
+        )
+        payload = {
+            "ok": True,
+            "model_name": version.name,
+            "model_version": version.version,
+            "from_status": previous_status,
+            "to_status": version.status,
+            "summary": _build_strategy_payload(store=store, limit=20)["summary"],
+        }
+        event_bus.publish("strategy.model.transitioned", payload)
+        return payload
+
+    @app.get("/reference/checks")
+    async def reference_checks() -> dict[str, Any]:
+        settings = ensure_runtime_paths()
+        checks = await _load_reference_checks(settings)
+        payload = {
+            "checks": [serialize_reference_check(check) for check in checks],
+            "summary": summarize_reference_checks(checks),
+        }
+        event_bus.publish("reference.snapshot", payload)
+        return payload
+
+    @app.get("/risk/status")
+    async def risk_status() -> dict[str, Any]:
+        settings = ensure_runtime_paths()
+        store = SQLiteStore(settings.sqlite_path)
+        reporter = Reporter(settings.sqlite_path)
         open_positions = store.list_open_positions()
         open_risk = sum(float(position.get("risk_usdc") or 0.0) for position in open_positions)
         shadow = store.shadow_summary()
-        aggregate = Reporter(settings.sqlite_path).aggregate_summary()
+        aggregate = reporter.aggregate_summary()
         safety = get_safety_controller().state()
+        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("SUPERAJAN12_SOURCE_HEALTH_MODE") == "static":
+            source_registry = build_default_health_registry()
+        else:
+            source_registry = await build_live_health_registry()
+        source_snapshot = source_registry.snapshot()
+        source_summary = _source_summary(source_snapshot)
         capital = CapitalLimitEngine(
             max_single_trade_usdc=settings.max_market_risk_usdc,
             max_total_open_risk_usdc=max(settings.max_market_risk_usdc * 5, settings.max_market_risk_usdc),
@@ -256,6 +335,12 @@ def create_backend_app() -> FastAPI:
             current_daily_pnl_usdc=float(shadow.get("total_unrealized_pnl_usdc") or 0.0),
         )
         execution = ExecutionGuard().can_execute(mode=settings.mode, safety_state=safety, secrets_ready=False)
+        risk_signals = _build_risk_signals(
+            open_positions=open_positions,
+            source_summary=source_summary,
+            current_daily_pnl_usdc=float(shadow.get("total_unrealized_pnl_usdc") or 0.0),
+            max_daily_loss_usdc=settings.max_daily_loss_usdc,
+        )
         payload = {
             "mode": settings.mode,
             "safety": {
@@ -276,6 +361,12 @@ def create_backend_app() -> FastAPI:
                 "reasons": list(execution.reasons),
             },
             "aggregate": aggregate,
+            "risk_signals": risk_signals,
+            "source_health_gate": {
+                "allowed": source_summary["degraded"] == 0,
+                "degraded_source_count": source_summary["degraded"],
+                "open_circuit_breakers": sum(1 for source in source_snapshot if source.get("circuit_breaker") == "open"),
+            },
         }
         event_bus.publish("risk.snapshot", payload)
         return payload
@@ -283,9 +374,9 @@ def create_backend_app() -> FastAPI:
     @app.get("/execution/status")
     def execution_status() -> dict[str, Any]:
         settings = ensure_runtime_paths()
+        store = SQLiteStore(settings.sqlite_path)
         safety = get_safety_controller().state()
-        approval_gate = ManualApprovalGate()
-        pending_ticket = approval_gate.request("live_execution", "desktop execution center preview")
+        strategy_payload = _build_strategy_payload(store=store, limit=20)
         required_secret_names = (
             "SUPERAJAN12_LIVE_API_KEY",
             "SUPERAJAN12_LIVE_API_SECRET",
@@ -293,25 +384,41 @@ def create_backend_app() -> FastAPI:
         secret_manager = EnvSecretManager()
         secret_refs = [secret_manager.has_secret(name) for name in required_secret_names]
         secrets_ready = all(secret.present for secret in secret_refs)
-        guard = ExecutionGuard(approval_gate).can_execute(
-            mode=settings.mode,
-            safety_state=safety,
-            approval_ticket=pending_ticket,
-            secrets_ready=secrets_ready,
-        )
-        local_open_positions = len(SQLiteStore(settings.sqlite_path).list_open_positions())
+        local_open_positions = len(store.list_open_positions())
         reconciliation = ReconciliationAgent().compare_counts(
             local_open_positions=local_open_positions,
             external_open_positions=local_open_positions,
+        )
+        readiness = _build_micro_live_readiness(
+            store=store,
+            strategy_payload=strategy_payload,
+            secrets_ready=secrets_ready,
+            reconciliation=reconciliation,
+        )
+        approval_gate = ManualApprovalGate()
+        approval_ticket = approval_gate.request("live_execution", "desktop execution center preview")
+        latest_ack = readiness["operator_ack"]
+        if latest_ack and bool(latest_ack.get("acknowledged")):
+            approval_ticket = approval_gate.approve(
+                approval_ticket,
+                approved_by=str(latest_ack.get("acknowledged_by") or "operator"),
+            )
+        guard = ExecutionGuard(approval_gate).can_execute(
+            mode=settings.mode,
+            safety_state=safety,
+            approval_ticket=approval_ticket,
+            secrets_ready=secrets_ready,
         )
         payload = {
             "mode": settings.mode,
             "live_trading": "disabled",
             "approval": {
                 "required": True,
-                "approved": False,
-                "action": pending_ticket.action,
-                "reason": pending_ticket.reason,
+                "approved": approval_ticket.approved,
+                "action": approval_ticket.action,
+                "reason": approval_ticket.reason,
+                "approved_by": approval_ticket.approved_by,
+                "operator_ack": latest_ack,
             },
             "secrets": {
                 "ready": secrets_ready,
@@ -326,10 +433,33 @@ def create_backend_app() -> FastAPI:
                 "allowed": guard.allowed,
                 "reasons": list(guard.reasons),
             },
+            "micro_live_readiness": readiness,
             "dry_run_order_supported": True,
             "dry_run_preview": _build_dry_run_preview(guard),
         }
         event_bus.publish("execution.snapshot", payload)
+        return payload
+
+    @app.post("/execution/operator-acknowledgement")
+    def execution_operator_acknowledgement(request: ExecutionAcknowledgementRequest) -> dict[str, Any]:
+        settings = ensure_runtime_paths()
+        store = SQLiteStore(settings.sqlite_path)
+        ack_id = store.record_operator_acknowledgement(
+            scope=LIVE_EXECUTION_ACK_SCOPE,
+            acknowledged=request.acknowledged,
+            note=request.note,
+            acknowledged_by=request.acknowledged_by,
+        )
+        payload = execution_status()
+        event_bus.publish(
+            "execution.operator_acknowledgement.recorded",
+            {
+                "ack_id": ack_id,
+                "acknowledged": request.acknowledged,
+                "acknowledged_by": request.acknowledged_by,
+                "note": request.note,
+            },
+        )
         return payload
 
     @app.get("/system/health")
@@ -431,13 +561,18 @@ def create_backend_app() -> FastAPI:
     async def scan(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         event_bus.publish("scan.started", {"limit": limit})
+        reference_checks = await _load_reference_checks(settings)
         scanner = MarketScannerAgent(
             polymarket=build_polymarket_client(settings),
             risk_engine=build_risk_engine(settings),
+            reference_checks=reference_checks,
         )
         result = await scanner.scan(limit=limit)
         scan_id = persist_scan_result(result, summary_event_type="backend.scan.completed", settings=settings)
-        payload = build_scan_response(result, scan_id)
+        payload = {
+            **build_scan_response(result, scan_id),
+            "reference_summary": summarize_reference_checks(reference_checks),
+        }
         event_bus.publish("scan.completed", payload)
         for score in result.scores[:25]:
             event_bus.publish(
@@ -501,6 +636,54 @@ def _read_audit_events(path: Path, limit: int) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             events.append({"event_type": "corrupt_line", "raw": line})
     return events
+
+
+def _resolve_transition_target(
+    *,
+    store: SQLiteStore,
+    model_name: str | None,
+    model_version: str | None,
+) -> dict[str, object] | None:
+    rows = store.list_model_versions(limit=100)
+    if model_name and model_version:
+        for row in rows:
+            if str(row.get("name") or "") == model_name and str(row.get("version") or "") == model_version:
+                return row
+        return None
+    return None if not rows else rows[0]
+
+
+def _latest_strategy_score_for(store: SQLiteStore, strategy_name: str) -> dict[str, object] | None:
+    for row in store.list_strategy_scores(limit=100):
+        if str(row.get("strategy_name") or "") == strategy_name:
+            return row
+    return None
+
+
+async def _load_reference_checks(settings: Any) -> list[ReferenceCheck]:
+    agent = build_reference_agent(settings)
+    checks = await asyncio.gather(
+        agent.check_btc(),
+        agent.check_eth(),
+        agent.check_sol(),
+        return_exceptions=True,
+    )
+    loaded: list[ReferenceCheck] = []
+    for symbol, item in zip(("BTC", "ETH", "SOL"), checks, strict=False):
+        if isinstance(item, ReferenceCheck):
+            loaded.append(item)
+            continue
+        loaded.append(
+            ReferenceCheck(
+                symbol=symbol,
+                ok=False,
+                median_price=None,
+                max_deviation_bps=None,
+                sources=(),
+                reasons=(f"reference check failed: {item.__class__.__name__}",),
+            )
+        )
+    return loaded
 
 
 def _build_dry_run_preview(guard: Any) -> dict[str, Any] | None:
@@ -662,6 +845,256 @@ def _degraded_source_rows(source_snapshot: list[dict[str, Any]]) -> list[dict[st
             }
         )
     return rows
+
+
+def _build_strategy_payload(*, store: SQLiteStore, limit: int) -> dict[str, Any]:
+    registry = ModelRegistry()
+    models = store.list_model_versions(limit=limit)
+    scores = store.list_strategy_scores(limit=limit)
+    history = store.list_model_status_history(limit=limit)
+    latest_scores_by_name: dict[str, dict[str, object]] = {}
+    promotion_checks: list[dict[str, Any]] = []
+    live_eligible_models: list[dict[str, object]] = []
+
+    for row in scores:
+        strategy_name = str(row.get("strategy_name") or "")
+        if strategy_name and strategy_name not in latest_scores_by_name:
+            latest_scores_by_name[strategy_name] = row
+
+    for row in models:
+        version = ModelVersion(
+            name=str(row.get("name") or ""),
+            version=str(row.get("version") or ""),
+            status=str(row.get("status") or ""),
+            notes=None if row.get("notes") is None else str(row.get("notes")),
+        )
+        latest_score = latest_scores_by_name.get(version.name)
+        policy = registry.evaluate_promotion(version, latest_score=latest_score)
+        live_eligible = registry.can_trade_live(version)
+        if live_eligible:
+            live_eligible_models.append(row)
+        promotion_checks.append(
+            {
+                "name": version.name,
+                "version": version.version,
+                "status": version.status,
+                "notes": version.notes,
+                "created_at": row.get("created_at"),
+                "live_eligible": live_eligible,
+                "ready": policy.ready,
+                "next_statuses": list(policy.next_statuses),
+                "reasons": list(policy.reasons),
+                "blocking_reasons": [] if policy.ready else list(policy.reasons),
+                "latest_score": latest_score,
+                "recommended_action": _recommended_model_action(version.status, policy.ready, policy.next_statuses),
+            }
+        )
+
+    return {
+        "scores": scores,
+        "models": models,
+        "live_eligible_models": live_eligible_models,
+        "promotion_checks": promotion_checks,
+        "model_history": history,
+        "summary": _build_strategy_summary(
+            models=models,
+            promotion_checks=promotion_checks,
+            history=history,
+            scores=scores,
+        ),
+        "last_transition": None if not history else history[0],
+    }
+
+
+def _build_strategy_summary(
+    *,
+    models: list[dict[str, object]],
+    promotion_checks: list[dict[str, Any]],
+    history: list[dict[str, object]],
+    scores: list[dict[str, object]],
+) -> dict[str, Any]:
+    counts = {"candidate": 0, "shadow": 0, "approved": 0, "retired": 0, "unknown": 0}
+    for row in models:
+        status = str(row.get("status") or "unknown")
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["unknown"] += 1
+
+    ready_model_count = sum(1 for row in promotion_checks if bool(row.get("ready")))
+    blocked_model_count = sum(
+        1
+        for row in promotion_checks
+        if not bool(row.get("ready")) and str(row.get("status") or "") in {"candidate", "shadow"}
+    )
+    ready_for_shadow_count = sum(
+        1 for row in promotion_checks if bool(row.get("ready")) and str(row.get("status") or "") == "candidate"
+    )
+    ready_for_approval_count = sum(
+        1 for row in promotion_checks if bool(row.get("ready")) and str(row.get("status") or "") == "shadow"
+    )
+    latest_score = None if not scores else scores[0]
+    latest_transition = None if not history else history[0]
+
+    if ready_for_approval_count > 0:
+        next_gate = "Manual approval review is the next gate for shadow models."
+    elif ready_for_shadow_count > 0:
+        next_gate = "Promote ready candidate models into shadow validation."
+    elif counts["approved"] > 0:
+        next_gate = "Execution guard, secrets and operator approvals are the remaining live blockers."
+    elif counts["candidate"] + counts["shadow"] > 0:
+        next_gate = "Collect more scored outcomes before the next promotion step."
+    else:
+        next_gate = "Register a candidate model and record strategy scores to start the promotion ladder."
+
+    return {
+        "total_models": len(models),
+        "candidate_count": counts["candidate"],
+        "shadow_count": counts["shadow"],
+        "approved_count": counts["approved"],
+        "retired_count": counts["retired"],
+        "unknown_count": counts["unknown"],
+        "ready_model_count": ready_model_count,
+        "blocked_model_count": blocked_model_count,
+        "ready_for_shadow_count": ready_for_shadow_count,
+        "ready_for_approval_count": ready_for_approval_count,
+        "history_count": len(history),
+        "next_gate": next_gate,
+        "latest_score_name": None if latest_score is None else latest_score.get("strategy_name"),
+        "latest_score_created_at": None if latest_score is None else latest_score.get("created_at"),
+        "latest_transition_at": None if latest_transition is None else latest_transition.get("changed_at"),
+    }
+
+
+def _recommended_model_action(status: str, ready: bool, next_statuses: tuple[str, ...]) -> str:
+    if not next_statuses:
+        return "No further promotion path."
+    if ready:
+        return f"Ready to move toward {next_statuses[0]}."
+    if status == "candidate":
+        return "Add more paper/shadow evidence before shadow promotion."
+    if status == "shadow":
+        return "Add more validated outcomes before approval review."
+    if status == "approved":
+        return "Monitor live guard readiness or retire if score quality slips."
+    return "Review strategy lifecycle state."
+
+
+def _build_micro_live_readiness(
+    *,
+    store: SQLiteStore,
+    strategy_payload: dict[str, Any],
+    secrets_ready: bool,
+    reconciliation: Any,
+) -> dict[str, Any]:
+    strategy_summary = strategy_payload.get("summary") if isinstance(strategy_payload.get("summary"), dict) else {}
+    latest_score = strategy_payload.get("scores", [None])[0] if strategy_payload.get("scores") else None
+    latest_ack = store.latest_operator_acknowledgement(LIVE_EXECUTION_ACK_SCOPE)
+    derived_items = {
+        "approved_model": {
+            "label": "Approved model exists for live gate review.",
+            "passed": int(strategy_summary.get("approved_count") or 0) > 0,
+            "detail": f"approved_count={strategy_summary.get('approved_count', 0)}",
+        },
+        "strategy_score_positive": {
+            "label": "Latest strategy score remains positive.",
+            "passed": bool(latest_score) and float((latest_score or {}).get("score") or 0.0) > 0,
+            "detail": "no strategy score recorded" if not latest_score else f"latest_score={float((latest_score or {}).get('score') or 0.0):.4f}",
+        },
+        "sample_size_ready": {
+            "label": "Sample-size readiness threshold is met.",
+            "passed": bool(latest_score) and int((latest_score or {}).get("sample_count") or 0) >= 100,
+            "detail": "no strategy score recorded" if not latest_score else f"sample_count={int((latest_score or {}).get('sample_count') or 0)}",
+        },
+        "secrets_ready": {
+            "label": "Required live execution secrets are present.",
+            "passed": secrets_ready,
+            "detail": "live secrets present" if secrets_ready else "missing one or more required live secrets",
+        },
+        "reconciliation_tested": {
+            "label": "Reconciliation checks have been exercised.",
+            "passed": bool(getattr(reconciliation, "ok", False)),
+            "detail": " | ".join(getattr(reconciliation, "reasons", ())),
+        },
+        "manual_approval_tested": {
+            "label": "Manual approval process has been acknowledged by an operator.",
+            "passed": bool(latest_ack and latest_ack.get("acknowledged")),
+            "detail": "no operator acknowledgement saved" if not latest_ack else str(latest_ack.get("note") or "operator acknowledgement recorded"),
+        },
+    }
+    for item_key, label in MICRO_LIVE_CHECKLIST_ITEMS:
+        derived = derived_items[item_key]
+        store.set_readiness_item(
+            scope=MICRO_LIVE_SCOPE,
+            item_key=item_key,
+            label=label,
+            passed=bool(derived["passed"]),
+            detail=str(derived["detail"]),
+            updated_by="system",
+        )
+    items = store.list_readiness_items(MICRO_LIVE_SCOPE)
+    passed_count = sum(1 for item in items if bool(item.get("passed")))
+    total_count = len(items)
+    blocked_items = [item for item in items if not bool(item.get("passed"))]
+    return {
+        "scope": MICRO_LIVE_SCOPE,
+        "items": items,
+        "passed_count": passed_count,
+        "total_count": total_count,
+        "ready": total_count > 0 and passed_count == total_count,
+        "blocked_items": blocked_items,
+        "operator_ack": latest_ack,
+    }
+
+
+def _build_risk_signals(
+    *,
+    open_positions: list[dict[str, Any]],
+    source_summary: dict[str, int],
+    current_daily_pnl_usdc: float,
+    max_daily_loss_usdc: float,
+) -> dict[str, dict[str, Any]]:
+    funding_status = "degraded"
+    correlation_status = "degraded"
+    liquidation_status = "clear" if not open_positions else "monitor"
+    funding_reasons = ["funding feed not wired yet"]
+    correlation_reasons = ["cross-position correlation model not wired yet"]
+    liquidation_reasons = ["no leveraged live positions"] if not open_positions else ["paper/shadow positions need liquidation-distance model"]
+
+    if source_summary.get("degraded", 0) > 0:
+        funding_reasons.append("reference venue health is degraded")
+        correlation_reasons.append("source degradation reduces portfolio confidence")
+
+    utilization = 0.0
+    if max_daily_loss_usdc > 0:
+        utilization = min(abs(current_daily_pnl_usdc) / max_daily_loss_usdc, 1.0)
+
+    return {
+        "funding": {
+            "status": funding_status,
+            "value": None,
+            "confidence": 0.0,
+            "reasons": funding_reasons,
+        },
+        "correlation": {
+            "status": correlation_status,
+            "value": None,
+            "confidence": 0.0,
+            "reasons": correlation_reasons,
+        },
+        "liquidation_distance": {
+            "status": liquidation_status,
+            "value": None,
+            "confidence": 0.0 if not open_positions else 0.2,
+            "reasons": liquidation_reasons,
+        },
+        "daily_loss_buffer": {
+            "status": "clear" if utilization < 0.5 else "monitor" if utilization < 0.8 else "tight",
+            "value": round(max(max_daily_loss_usdc - abs(current_daily_pnl_usdc), 0.0), 2),
+            "confidence": 1.0,
+            "reasons": [f"daily loss utilization={utilization:.2f}"],
+        },
+    }
 
 
 def _source_detail(metadata: dict[str, Any]) -> str | None:

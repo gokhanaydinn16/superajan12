@@ -1,3 +1,3 @@
-from .app import FastAPI, Query, WebSocket, WebSocketDisconnect
+from .app import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-__all__ = ["FastAPI", "Query", "WebSocket", "WebSocketDisconnect"]
+__all__ = ["FastAPI", "HTTPException", "Query", "WebSocket", "WebSocketDisconnect"]

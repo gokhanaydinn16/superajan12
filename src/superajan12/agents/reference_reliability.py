@@ -7,7 +7,19 @@ from superajan12.models import Decision, Market, ReferenceReliability
 class ReferenceReliabilityAgent:
     def evaluate(self, market: Market, checks: list[ReferenceCheck] | None = None) -> ReferenceReliability:
         text = f"{market.question} {market.category or ''}".lower()
-        crypto_terms = ("bitcoin", "btc", "ethereum", "eth", "solana", "sol", "crypto")
+        crypto_terms = (
+            "bitcoin",
+            "btc",
+            "ethereum",
+            "eth",
+            "solana",
+            "sol",
+            "ripple",
+            "xrp",
+            "dogecoin",
+            "doge",
+            "crypto",
+        )
         is_crypto_market = any(term in text for term in crypto_terms)
 
         if not is_crypto_market:

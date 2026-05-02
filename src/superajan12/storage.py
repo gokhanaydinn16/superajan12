@@ -127,6 +127,39 @@ class SQLiteStore:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(name, version)
                 );
+
+                CREATE TABLE IF NOT EXISTS model_status_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_version_id INTEGER NOT NULL REFERENCES model_versions(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    from_status TEXT,
+                    to_status TEXT NOT NULL,
+                    reason TEXT,
+                    changed_by TEXT NOT NULL DEFAULT 'system',
+                    changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS readiness_checklists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    passed INTEGER NOT NULL DEFAULT 0,
+                    detail TEXT,
+                    updated_by TEXT NOT NULL DEFAULT 'system',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(scope, item_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_acknowledgements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL,
+                    acknowledged INTEGER NOT NULL DEFAULT 0,
+                    note TEXT,
+                    acknowledged_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             for table, column, ddl in (
@@ -279,8 +312,21 @@ class SQLiteStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def save_model_version(self, name: str, version: str, status: str, notes: str | None = None) -> int:
+    def save_model_version(
+        self,
+        name: str,
+        version: str,
+        status: str,
+        notes: str | None = None,
+        change_reason: str | None = None,
+        changed_by: str = "system",
+    ) -> int:
         with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            existing = conn.execute(
+                "SELECT id, status FROM model_versions WHERE name = ? AND version = ?",
+                (name, version),
+            ).fetchone()
             conn.execute(
                 """
                 INSERT INTO model_versions (name, version, status, notes)
@@ -297,7 +343,26 @@ class SQLiteStore:
             ).fetchone()
             if row is None:
                 raise RuntimeError("model version save failed")
-            return int(row[0])
+            model_version_id = int(row["id"])
+            previous_status = None if existing is None else str(existing["status"])
+            if existing is None or previous_status != status:
+                conn.execute(
+                    """
+                    INSERT INTO model_status_history (
+                        model_version_id, name, version, from_status, to_status, reason, changed_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        model_version_id,
+                        name,
+                        version,
+                        previous_status,
+                        status,
+                        change_reason or notes or f"status set to {status}",
+                        changed_by,
+                    ),
+                )
+            return model_version_id
 
     def list_model_versions(self, limit: int = 20) -> list[dict[str, object]]:
         with self.connect() as conn:
@@ -312,6 +377,107 @@ class SQLiteStore:
                 (limit,),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def list_model_status_history(self, limit: int = 50) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, model_version_id, name, version, from_status, to_status,
+                       reason, changed_by, changed_at
+                FROM model_status_history
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def set_readiness_item(
+        self,
+        *,
+        scope: str,
+        item_key: str,
+        label: str,
+        passed: bool,
+        detail: str | None = None,
+        updated_by: str = "system",
+    ) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO readiness_checklists (scope, item_key, label, passed, detail, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scope, item_key) DO UPDATE SET
+                    label = excluded.label,
+                    passed = excluded.passed,
+                    detail = excluded.detail,
+                    updated_by = excluded.updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (scope, item_key, label, 1 if passed else 0, detail, updated_by),
+            )
+            row = conn.execute(
+                "SELECT id FROM readiness_checklists WHERE scope = ? AND item_key = ?",
+                (scope, item_key),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("readiness checklist save failed")
+            return int(row[0])
+
+    def list_readiness_items(self, scope: str) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, scope, item_key, label, passed, detail, updated_by, updated_at
+                FROM readiness_checklists
+                WHERE scope = ?
+                ORDER BY item_key ASC
+                """,
+                (scope,),
+            ).fetchall()
+            items = [dict(row) for row in rows]
+            for item in items:
+                item["passed"] = bool(item.get("passed"))
+            return items
+
+    def record_operator_acknowledgement(
+        self,
+        *,
+        scope: str,
+        acknowledged: bool,
+        note: str | None,
+        acknowledged_by: str,
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO operator_acknowledgements (scope, acknowledged, note, acknowledged_by)
+                VALUES (?, ?, ?, ?)
+                """,
+                (scope, 1 if acknowledged else 0, note, acknowledged_by),
+            )
+            return int(cursor.lastrowid)
+
+    def latest_operator_acknowledgement(self, scope: str) -> dict[str, object] | None:
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT id, scope, acknowledged, note, acknowledged_by, created_at
+                FROM operator_acknowledgements
+                WHERE scope = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (scope,),
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["acknowledged"] = bool(result.get("acknowledged"))
+            return result
 
     def _insert_scores(self, conn: sqlite3.Connection, scan_id: int, scores: Iterable[MarketScore]) -> None:
         conn.executemany(

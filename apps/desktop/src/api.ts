@@ -59,6 +59,10 @@ export type StrategyScoresPayload = {
   scores: Array<Record<string, unknown>>;
   models: Array<Record<string, unknown>>;
   live_eligible_models: Array<Record<string, unknown>>;
+  promotion_checks: Array<Record<string, unknown>>;
+  model_history: Array<Record<string, unknown>>;
+  summary: Record<string, unknown>;
+  last_transition: Record<string, unknown> | null;
 };
 
 export type RiskStatusPayload = {
@@ -67,6 +71,8 @@ export type RiskStatusPayload = {
   capital: Record<string, unknown>;
   execution: Record<string, unknown>;
   aggregate: Record<string, unknown>;
+  risk_signals: Record<string, Record<string, unknown>>;
+  source_health_gate: Record<string, unknown>;
 };
 
 export type PositionsPayload = {
@@ -88,6 +94,15 @@ export type ExecutionStatusPayload = {
   };
   reconciliation: Record<string, unknown>;
   guard: Record<string, unknown>;
+  micro_live_readiness: {
+    scope: string;
+    items: Array<Record<string, unknown>>;
+    passed_count: number;
+    total_count: number;
+    ready: boolean;
+    blocked_items: Array<Record<string, unknown>>;
+    operator_ack: Record<string, unknown> | null;
+  };
   dry_run_order_supported: boolean;
   dry_run_preview: Record<string, unknown> | null;
 };
@@ -100,6 +115,20 @@ export type SystemHealthPayload = {
   database: Record<string, unknown>;
   audit_log: Record<string, unknown>;
   sources: Record<string, unknown>;
+};
+
+export type StrategyTransitionPayload = {
+  status: "candidate" | "shadow" | "approved" | "retired";
+  notes?: string;
+  model_name?: string;
+  model_version?: string;
+  changed_by?: string;
+};
+
+export type ExecutionAcknowledgementPayload = {
+  acknowledged?: boolean;
+  note?: string;
+  acknowledged_by?: string;
 };
 
 const FALLBACK_STATUS: DesktopBackendStatus = {
@@ -148,7 +177,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   try {
     response = await fetch(`${backend.url}${path}`, init);
-  } catch (error) {
+  } catch {
     backend = await refreshBackendStatus();
     response = await fetch(`${backend.url}${path}`, init);
   }
@@ -233,6 +262,22 @@ export function runScan(limit: number) {
 
 export function verifyEndpoints() {
   return request<Record<string, unknown>>("/verify-endpoints", { method: "POST" });
+}
+
+export function transitionStrategyModel(payload: StrategyTransitionPayload) {
+  return request<Record<string, unknown>>("/strategy/models/transition", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function acknowledgeExecution(payload: ExecutionAcknowledgementPayload) {
+  return request<Record<string, unknown>>("/execution/operator-acknowledgement", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function enableSafeMode(reason: string) {

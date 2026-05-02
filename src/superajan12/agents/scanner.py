@@ -73,7 +73,12 @@ class MarketScannerAgent:
             wallet = self.wallet_agent.evaluate(market)
             reference = self.reference_agent.evaluate(market, self.reference_checks)
             probability = self.probability_agent.estimate(market, order_book, resolution)
-            risk = self.risk_engine.evaluate_market(market=market, order_book=order_book)
+            risk = self.risk_engine.evaluate_market(
+                market=market,
+                order_book=order_book,
+                reference_gate_ok=reference.decision is not Decision.REJECT,
+                reference_gate_reasons=reference.reasons,
+            )
 
             final_decision = self._combine_decisions(
                 risk_decision=risk.decision,

@@ -31,6 +31,8 @@ class RiskEngine:
         order_book: OrderBookSnapshot | None,
         current_daily_pnl_usdc: float = 0.0,
         safe_mode: bool = False,
+        reference_gate_ok: bool | None = None,
+        reference_gate_reasons: list[str] | None = None,
     ) -> RiskDecision:
         reasons: list[str] = []
 
@@ -64,6 +66,11 @@ class RiskEngine:
                 reasons.append(
                     f"spread genis: {order_book.spread_bps:.1f} bps > {self.max_spread_bps:.1f} bps"
                 )
+
+        if reference_gate_ok is False:
+            reasons.append("referans fiyat kapisi reddetti")
+            if reference_gate_reasons:
+                reasons.extend(reference_gate_reasons)
 
         if reasons:
             return RiskDecision(decision=Decision.REJECT, max_risk_usdc=0.0, reasons=reasons)
