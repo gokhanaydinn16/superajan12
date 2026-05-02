@@ -189,6 +189,10 @@ export default function App() {
   const strategyModels = strategy?.models || [];
   const strategyScores = strategy?.scores || [];
   const liveEligibleModels = strategy?.live_eligible_models || [];
+  const promotionChecks = strategy?.promotion_checks || [];
+  const strategyHistory = strategy?.model_history || [];
+  const strategySummary = strategy?.summary || {};
+  const lastTransition = strategy?.last_transition || null;
   const onlineSources = useMemo(() => sources.filter((source) => source.status === "live").length, [sources]);
   const strategyStatusCounts = useMemo(() => {
     return strategyModels.reduce<Record<string, number>>((acc, row) => {
@@ -199,9 +203,12 @@ export default function App() {
   }, [strategyModels]);
   const latestModel = strategyModels[0] || null;
   const latestStrategyScore = strategyScores[0] || null;
-  const readinessTone = liveEligibleModels.length > 0 ? "good" : latestModel && latestModel.status === "shadow" ? "warn" : "muted-pill";
-  const readinessLabel = liveEligibleModels.length > 0 ? "promotion ready" : latestModel ? String(latestModel.status || "watching") : "awaiting model";
-  const readinessCopy = nextStrategyAction(String(latestModel?.status || ""), liveEligibleModels.length);
+  const firstBlockedCheck = promotionChecks.find((item) => !Boolean(item.ready));
+  const readyModelCount = Number(strategySummary.ready_model_count || 0);
+  const blockedModelCount = Number(strategySummary.blocked_model_count || 0);
+  const readinessTone = readyModelCount > 0 ? "good" : blockedModelCount > 0 ? "warn" : "muted-pill";
+  const readinessLabel = readyModelCount > 0 ? "promotion ready" : strategyModels.length > 0 ? "needs evidence" : "awaiting model";
+  const readinessCopy = String(strategySummary.next_gate || nextStrategyAction(String(latestModel?.status || ""), liveEligibleModels.length));
 
   return (
     <div className="shell">
@@ -400,7 +407,7 @@ export default function App() {
             </div>
             <div className="strategy-banner">
               <div>
-                <strong>{liveEligibleModels.length > 0 ? "Model promotion path is open" : "Promotion path is still gated"}</strong>
+                <strong>{readyModelCount > 0 ? "Promotion path has ready models" : "Promotion path is still collecting evidence"}</strong>
                 <p>{readinessCopy}</p>
               </div>
               <div className="strategy-stats">
@@ -415,39 +422,43 @@ export default function App() {
               </div>
             </div>
             <div className="summary-strip summary-strip-two strategy-summary">
-              <SummaryCard title="Approved" value={fmt(strategyStatusCounts.approved, 0)} sub="ready models" />
-              <SummaryCard title="Shadow" value={fmt(strategyStatusCounts.shadow, 0)} sub="validation queue" />
+              <SummaryCard title="Ready Now" value={fmt(strategySummary.ready_model_count, 0)} sub="promotion checks" />
+              <SummaryCard title="Blocked" value={fmt(strategySummary.blocked_model_count, 0)} sub="needs more evidence" />
             </div>
             <div className="strategy-columns">
               <div>
-                <div className="mini-section-title">Promotion ladder</div>
+                <div className="mini-section-title">Promotion checks</div>
                 <div className="source-list compact-gap">
-                  {strategyModels.length === 0 ? <div className="empty-box">No model versions recorded yet.</div> : strategyModels.slice(0, 3).map((model, index) => (
-                    <div className="source-row" key={`${model.name}-${model.version}-${index}`}>
+                  {promotionChecks.length === 0 ? <div className="empty-box">No model policy checks recorded yet.</div> : promotionChecks.slice(0, 3).map((check, index) => (
+                    <div className="source-row" key={`${check.name}-${check.version}-${index}`}>
                       <div className="source-body">
-                        <strong>{fmt(model.name, 0)} {fmt(model.version, 0)}</strong>
-                        <div className="source-sub">{model.notes ? fmt(model.notes, 0) : "No transition note recorded."}</div>
+                        <strong>{fmt(check.name, 0)} {fmt(check.version, 0)}</strong>
+                        <div className="source-sub">
+                          {Array.isArray(check.blocking_reasons) && check.blocking_reasons.length > 0 ? check.blocking_reasons.join(" | ") : Array.isArray(check.reasons) ? check.reasons.join(" | ") : fmt(check.reasons, 0)}
+                        </div>
+                        <div className="source-sub">next {Array.isArray(check.next_statuses) && check.next_statuses.length > 0 ? check.next_statuses.join(" -> ") : "-"}</div>
                       </div>
                       <div className="source-meta vertical-meta">
-                        <span className={`pill ${statusClass(String(model.status || "unknown"))}`}>{fmt(model.status, 0)}</span>
-                        <span className="source-latency">{compactTime(model.created_at)}</span>
+                        <span className={`pill ${Boolean(check.ready) ? "good" : statusClass(String(check.status || "unknown"))}`}>{Boolean(check.ready) ? "ready" : fmt(check.status, 0)}</span>
+                        <span className="source-latency">score {check.latest_score ? fmt((check.latest_score as Record<string, unknown>).score, 2) : "-"}</span>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
               <div>
-                <div className="mini-section-title">Recent strategy scores</div>
+                <div className="mini-section-title">Recent transitions</div>
                 <div className="source-list compact-gap">
-                  {strategyScores.length === 0 ? <div className="empty-box">No strategy score rows yet.</div> : strategyScores.slice(0, 3).map((row, index) => (
-                    <div className="source-row" key={`${row.strategy_name}-${row.created_at}-${index}`}>
+                  {strategyHistory.length === 0 ? <div className="empty-box">No promotion history recorded yet.</div> : strategyHistory.slice(0, 3).map((row, index) => (
+                    <div className="source-row" key={`${row.name}-${row.version}-${row.changed_at}-${index}`}>
                       <div className="source-body">
-                        <strong>{fmt(row.strategy_name, 0)}</strong>
-                        <div className="source-sub">samples {fmt(row.sample_count, 0)} | win rate {row.win_rate === null || row.win_rate === undefined ? "-" : `${(Number(row.win_rate) * 100).toFixed(1)}%`}</div>
+                        <strong>{fmt(row.name, 0)} {fmt(row.version, 0)}</strong>
+                        <div className="source-sub">{fmt(row.from_status, 0)} -> {fmt(row.to_status, 0)}</div>
+                        <div className="source-sub">{fmt(row.reason, 0)}</div>
                       </div>
                       <div className="source-meta vertical-meta">
-                        <span className={`pill ${Number(row.score || 0) >= 0 ? "good" : "bad"}`}>{fmt(row.score, 2)}</span>
-                        <span className="source-latency">PnL {fmt(row.total_pnl_usdc, 2)}</span>
+                        <span className={`pill ${statusClass(String(row.to_status || "unknown"))}`}>{fmt(row.to_status, 0)}</span>
+                        <span className="source-latency">{compactTime(row.changed_at)}</span>
                       </div>
                     </div>
                   ))}
@@ -455,8 +466,10 @@ export default function App() {
               </div>
             </div>
             <div className="strategy-footnote">
-              <span className="mini-section-title">Last transition reason</span>
-              <p>{latestModel?.notes ? fmt(latestModel.notes, 0) : "No model note has been saved for the latest transition."}</p>
+              <span className="mini-section-title">Last lifecycle note</span>
+              <p>
+                {lastTransition?.reason ? fmt(lastTransition.reason, 0) : Array.isArray(firstBlockedCheck?.blocking_reasons) && firstBlockedCheck.blocking_reasons.length > 0 ? firstBlockedCheck.blocking_reasons.join(" | ") : latestModel?.notes ? fmt(latestModel.notes, 0) : "No transition or blocker note has been saved yet."}
+              </p>
             </div>
           </div>
           <div className="panel large">
