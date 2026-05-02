@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, Brain, Database, Gauge, LineChart, Radar, Shield, WalletCards, Zap } from "lucide-react";
 import {
+  acknowledgeExecution,
   BackendEvent,
   DashboardPayload,
+  ExecutionStatusPayload,
   MarketsPayload,
   RiskStatusPayload,
   SourceHealth,
@@ -10,6 +12,7 @@ import {
   connectEventStream,
   getDashboard,
   getEvents,
+  getExecutionStatus,
   getMarkets,
   getRiskStatus,
   getSources,
@@ -85,6 +88,7 @@ export default function App() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [markets, setMarkets] = useState<MarketsPayload | null>(null);
   const [risk, setRisk] = useState<RiskStatusPayload | null>(null);
+  const [execution, setExecution] = useState<ExecutionStatusPayload | null>(null);
   const [strategy, setStrategy] = useState<StrategyScoresPayload | null>(null);
   const [sources, setSources] = useState<SourceHealth[]>([]);
   const [limit, setLimit] = useState(25);
@@ -93,15 +97,17 @@ export default function App() {
   const [eventState, setEventState] = useState("connecting");
   const [logs, setLogs] = useState<LogItem[]>([{ time: new Date().toLocaleTimeString(), message: "Desktop Command Center ready" }]);
   const [operatorNote, setOperatorNote] = useState("");
+  const [executionNote, setExecutionNote] = useState("");
 
   const addLog = (message: string) => setLogs((items) => [{ time: new Date().toLocaleTimeString(), message }, ...items].slice(0, 120));
 
   async function refresh() {
     try {
-      const [dash, marketsPayload, riskPayload, strategyPayload, sourcePayload, events] = await Promise.all([
+      const [dash, marketsPayload, riskPayload, executionPayload, strategyPayload, sourcePayload, events] = await Promise.all([
         getDashboard(),
         getMarkets(),
         getRiskStatus(),
+        getExecutionStatus(),
         getStrategyScores(),
         getSources(),
         getEvents(20),
@@ -109,6 +115,7 @@ export default function App() {
       setDashboard(dash);
       setMarkets(marketsPayload);
       setRisk(riskPayload);
+      setExecution(executionPayload);
       setStrategy(strategyPayload);
       setSources(sourcePayload.sources);
       if (events.events.length > 0) {
@@ -174,6 +181,25 @@ export default function App() {
     }
   }
 
+  async function acknowledgeExecutionReadiness() {
+    addLog("Operator execution acknowledgement requested");
+    setStrategyBusy(true);
+    try {
+      const result = await acknowledgeExecution({
+        acknowledged: true,
+        note: executionNote.trim() || undefined,
+        acknowledged_by: "desktop_operator",
+      });
+      addLog(`Execution acknowledgement saved ${JSON.stringify(result)}`);
+      setExecutionNote("");
+      await refresh();
+    } catch (error) {
+      addLog(`Execution acknowledgement failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setStrategyBusy(false);
+    }
+  }
+
   useEffect(() => {
     let active = true;
     let socket: { close: () => void } | null = null;
@@ -217,6 +243,9 @@ export default function App() {
   const strategyModels = strategy?.models || [];
   const strategyScores = strategy?.scores || [];
   const liveEligibleModels = strategy?.live_eligible_models || [];
+  const readinessChecklist = execution?.micro_live_readiness?.items || [];
+  const readinessBlockedItems = execution?.micro_live_readiness?.blocked_items || [];
+  const operatorAck = execution?.micro_live_readiness?.operator_ack || null;
   const onlineSources = useMemo(() => sources.filter((source) => source.status === "live").length, [sources]);
   const strategyStatusCounts = useMemo(() => {
     return strategyModels.reduce<Record<string, number>>((acc, row) => {
@@ -419,6 +448,41 @@ export default function App() {
             <div className="panel-head"><h2>Wallet Intelligence</h2><span className="pill muted-pill">provider gated</span></div>
             <div className="empty-box">Dune / Nansen / Glassnode adapters require real API access. Wallet feed remains empty until configured.</div>
           </div>
+          <div className="panel">
+            <div className="panel-head"><h2>Execution Readiness</h2><span className={`pill ${execution?.micro_live_readiness?.ready ? "good" : "warn"}`}>{execution?.micro_live_readiness?.ready ? "ready" : "gated"}</span></div>
+            <div className="summary-strip summary-strip-two">
+              <SummaryCard title="Checklist" value={`${fmt(execution?.micro_live_readiness?.passed_count, 0)}/${fmt(execution?.micro_live_readiness?.total_count, 0)}`} sub="passed items" />
+              <SummaryCard title="Approval" value={operatorAck?.acknowledged ? "acked" : "pending"} sub={operatorAck?.acknowledged_by ? String(operatorAck.acknowledged_by) : "operator gate"} />
+            </div>
+            <div className="source-list compact-gap">
+              {readinessChecklist.length === 0 ? <div className="empty-box">No readiness items recorded yet.</div> : readinessChecklist.slice(0, 6).map((item, index) => (
+                <div className="source-row" key={`${String(item.item_key || "item")}-${index}`}>
+                  <div className="source-body">
+                    <strong>{fmt(item.label, 0)}</strong>
+                    <div className="source-sub">{fmt(item.detail, 0)}</div>
+                  </div>
+                  <div className="source-meta vertical-meta">
+                    <span className={`pill ${item.passed ? "good" : "warn"}`}>{item.passed ? "passed" : "blocked"}</span>
+                    <span className="source-latency">{fmt(item.updated_by, 0)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="execution-ack-card">
+              <div className="mini-section-title">Operator acknowledgement</div>
+              <p className="operator-copy">{operatorAck?.note ? String(operatorAck.note) : readinessBlockedItems.length > 0 ? `Blocked: ${readinessBlockedItems.map((item) => String(item.item_key || "item")).join(", ")}` : "Save an operator acknowledgement when the checklist and manual review are complete."}</p>
+              <div className="operator-note-wrap">
+                <textarea
+                  value={executionNote}
+                  onChange={(event) => setExecutionNote(event.target.value)}
+                  placeholder="Operator note, incident ref, or approval context"
+                />
+              </div>
+              <div className="execution-ack-actions">
+                <button disabled={strategyBusy} onClick={acknowledgeExecutionReadiness}>Acknowledgement Kaydet</button>
+              </div>
+            </div>
+          </div>
           <div className="panel strategy-panel">
             <div className="panel-head">
               <h2>Strategy Console</h2>
@@ -454,65 +518,23 @@ export default function App() {
               <div className="operator-grid">
                 <div className="operator-actions">
                   <button disabled={strategyBusy || !canTransitionModel} className="secondary" onClick={() => applyStrategyTransition("candidate")}>Adaya Al</button>
-                  <button disabled={strategyBusy || !canTransitionModel} className="secondary" onClick={() => applyStrategyTransition("shadow")}>Shadow'a Gecir</button>
-                  <button disabled={strategyBusy || !canTransitionModel} onClick={() => applyStrategyTransition("approved")}>Onayla</button>
-                  <button disabled={strategyBusy || !canTransitionModel} className="danger" onClick={() => applyStrategyTransition("retired")}>Emekliye Ayir</button>
+                  <button disabled={strategyBusy || !canTransitionModel} className="secondary" onClick={() => applyStrategyTransition("shadow")}>Shadowa Gec</button>
+                  <button disabled={strategyBusy || !canTransitionModel} onClick={() => applyStrategyTransition("approved")}>Approve Et</button>
+                  <button disabled={strategyBusy || !canTransitionModel} className="danger" onClick={() => applyStrategyTransition("retired")}>Retire Et</button>
                 </div>
                 <div className="operator-note-wrap">
-                  <label htmlFor="operator-note" className="mini-section-title">Transition note</label>
                   <textarea
-                    id="operator-note"
                     value={operatorNote}
                     onChange={(event) => setOperatorNote(event.target.value)}
-                    disabled={!canTransitionModel}
-                    placeholder="Gecis gerekcesi, risk notu veya operator yorumu"
+                    placeholder="Transition note, experiment ID, or approval context"
                   />
+                  <div className="strategy-footnote">
+                    <strong>Current ladder</strong>
+                    <p>{strategyStatusCounts.candidate || 0} candidate, {strategyStatusCounts.shadow || 0} shadow, {strategyStatusCounts.approved || 0} approved, {strategyStatusCounts.retired || 0} retired.</p>
+                    <p>Last transition: {strategy?.last_transition ? `${fmt(strategy.last_transition.from_status, 0)} -> ${fmt(strategy.last_transition.to_status, 0)} at ${compactTime(strategy.last_transition.changed_at)}` : "none recorded yet"}.</p>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="summary-strip summary-strip-two strategy-summary">
-              <SummaryCard title="Approved" value={fmt(strategyStatusCounts.approved, 0)} sub="ready models" />
-              <SummaryCard title="Shadow" value={fmt(strategyStatusCounts.shadow, 0)} sub="validation queue" />
-            </div>
-            <div className="strategy-columns">
-              <div>
-                <div className="mini-section-title">Promotion ladder</div>
-                <div className="source-list compact-gap">
-                  {strategyModels.length === 0 ? <div className="empty-box">No model versions recorded yet.</div> : strategyModels.slice(0, 3).map((model, index) => (
-                    <div className="source-row" key={`${model.name}-${model.version}-${index}`}>
-                      <div className="source-body">
-                        <strong>{fmt(model.name, 0)} {fmt(model.version, 0)}</strong>
-                        <div className="source-sub">{model.notes ? fmt(model.notes, 0) : "No transition note recorded."}</div>
-                      </div>
-                      <div className="source-meta vertical-meta">
-                        <span className={`pill ${statusClass(String(model.status || "unknown"))}`}>{fmt(model.status, 0)}</span>
-                        <span className="source-latency">{compactTime(model.created_at)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div className="mini-section-title">Recent strategy scores</div>
-                <div className="source-list compact-gap">
-                  {strategyScores.length === 0 ? <div className="empty-box">No strategy score rows yet.</div> : strategyScores.slice(0, 3).map((row, index) => (
-                    <div className="source-row" key={`${row.strategy_name}-${row.created_at}-${index}`}>
-                      <div className="source-body">
-                        <strong>{fmt(row.strategy_name, 0)}</strong>
-                        <div className="source-sub">samples {fmt(row.sample_count, 0)} | win rate {row.win_rate === null || row.win_rate === undefined ? "-" : `${(Number(row.win_rate) * 100).toFixed(1)}%`}</div>
-                      </div>
-                      <div className="source-meta vertical-meta">
-                        <span className={`pill ${Number(row.score || 0) >= 0 ? "good" : "bad"}`}>{fmt(row.score, 2)}</span>
-                        <span className="source-latency">PnL {fmt(row.total_pnl_usdc, 2)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="strategy-footnote">
-              <span className="mini-section-title">Last transition reason</span>
-              <p>{latestModel?.notes ? fmt(latestModel.notes, 0) : "No model note has been saved for the latest transition."}</p>
             </div>
           </div>
           <div className="panel large">
