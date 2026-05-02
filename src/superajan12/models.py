@@ -37,7 +37,20 @@ class OrderBookSnapshot(BaseModel):
     yes_bids: list[OrderBookLevel] = Field(default_factory=list)
     yes_asks: list[OrderBookLevel] = Field(default_factory=list)
     source: str = "book"
+    venue: str = "polymarket_clob"
+    token_id: str | None = None
+    snapshot_kind: str = "snapshot"
+    snapshot_id: str | None = None
+    sequence_start: int | None = None
+    sequence_end: int | None = None
+    previous_sequence_end: int | None = None
+    checksum: str | None = None
+    checksum_valid: bool | None = None
+    is_synthetic: bool = False
+    depth_levels: int = 0
+    latency_ms: float | None = None
     captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def best_bid(self) -> float | None:
@@ -142,6 +155,15 @@ class MarketScore(BaseModel):
     bid_depth_usdc: float = 0.0
     ask_depth_usdc: float = 0.0
     orderbook_source: str | None = None
+    market_state_status: str | None = None
+    market_state_confidence: float | None = None
+    market_state_venue: str | None = None
+    market_state_snapshot_kind: str | None = None
+    market_state_sequence_status: str | None = None
+    market_state_checksum_status: str | None = None
+    market_state_freshness_status: str | None = None
+    market_state_structure_status: str | None = None
+    market_state_is_synthetic: bool = False
     implied_probability: float | None = None
     model_probability: float | None = None
     edge: float | None = None
