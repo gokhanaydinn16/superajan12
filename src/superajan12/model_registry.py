@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
 
+SHADOW_APPROVAL_MIN_OUTCOMES = 20
+SHADOW_APPROVAL_MIN_WIN_RATE = 0.55
+SHADOW_APPROVAL_MIN_MARKED_RATE = 0.95
+
 
 @dataclass(frozen=True)
 class ModelVersion:
@@ -19,6 +23,59 @@ class ModelPromotionCheck:
     next_statuses: tuple[str, ...]
     ready: bool
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ShadowQualityCheck:
+    ready: bool
+    reasons: tuple[str, ...]
+
+
+def evaluate_shadow_quality(shadow_summary: Mapping[str, object] | None) -> ShadowQualityCheck:
+    if shadow_summary is None:
+        return ShadowQualityCheck(ready=False, reasons=("no shadow summary available",))
+
+    outcome_count = int(shadow_summary.get("outcome_count") or 0)
+    priced_outcome_count = int(shadow_summary.get("priced_outcome_count") or 0)
+    invalid_count = int(shadow_summary.get("invalid_count") or 0)
+    unknown_count = int(shadow_summary.get("unknown_count") or 0)
+    total_pnl = float(shadow_summary.get("total_unrealized_pnl_usdc") or 0.0)
+    win_rate_raw = shadow_summary.get("win_rate")
+    marked_rate_raw = shadow_summary.get("marked_rate")
+    win_rate = None if win_rate_raw is None else float(win_rate_raw)
+    marked_rate = None if marked_rate_raw is None else float(marked_rate_raw)
+
+    reasons: list[str] = []
+    if outcome_count < SHADOW_APPROVAL_MIN_OUTCOMES:
+        reasons.append(
+            f"need at least {SHADOW_APPROVAL_MIN_OUTCOMES} shadow outcomes before approval"
+        )
+    if priced_outcome_count < SHADOW_APPROVAL_MIN_OUTCOMES:
+        reasons.append("need priced shadow outcomes before approval")
+    if total_pnl <= 0:
+        reasons.append("shadow PnL must stay positive before approval")
+    if win_rate is None or win_rate < SHADOW_APPROVAL_MIN_WIN_RATE:
+        reasons.append(
+            f"shadow win rate must be at least {SHADOW_APPROVAL_MIN_WIN_RATE:.2f} before approval"
+        )
+    if marked_rate is None or marked_rate < SHADOW_APPROVAL_MIN_MARKED_RATE:
+        reasons.append(
+            f"shadow mark/fill quality must stay at or above {SHADOW_APPROVAL_MIN_MARKED_RATE:.2f}"
+        )
+    if invalid_count > 0:
+        reasons.append("shadow results contain invalid price marks")
+    if unknown_count > 0:
+        reasons.append("shadow results contain unknown marks")
+    if reasons:
+        return ShadowQualityCheck(ready=False, reasons=tuple(reasons))
+    return ShadowQualityCheck(
+        ready=True,
+        reasons=(
+            "shadow quality gate passed "
+            f"with outcomes={outcome_count}, total_pnl={total_pnl:.4f}, "
+            f"win_rate={win_rate:.2f}, marked_rate={marked_rate:.2f}",
+        ),
+    )
 
 
 class ModelRegistry:
@@ -55,6 +112,7 @@ class ModelRegistry:
         version: ModelVersion,
         latest_score: Mapping[str, object] | None = None,
         current_status: str | None = None,
+        shadow_summary: Mapping[str, object] | None = None,
     ) -> ModelPromotionCheck:
         evaluation_status = current_status or version.status
         next_statuses = self.allowed_transitions(evaluation_status)
@@ -87,12 +145,14 @@ class ModelRegistry:
             )
 
         if evaluation_status == "approved":
+            reasons: list[str] = []
             if latest_score is not None and float(latest_score.get("score") or 0.0) < 0:
-                return ModelPromotionCheck(
-                    next_statuses=next_statuses,
-                    ready=False,
-                    reasons=("approved model score slipped below zero; review for retirement",),
-                )
+                reasons.append("approved model score slipped below zero; review for retirement")
+            shadow_quality = evaluate_shadow_quality(shadow_summary)
+            if not shadow_quality.ready:
+                reasons.extend(shadow_quality.reasons)
+            if reasons:
+                return ModelPromotionCheck(next_statuses=next_statuses, ready=False, reasons=tuple(reasons))
             return ModelPromotionCheck(
                 next_statuses=next_statuses,
                 ready=False,
@@ -132,12 +192,16 @@ class ModelRegistry:
             reasons.append("strategy score must stay positive for approval")
         if win_rate is None or win_rate < 0.5:
             reasons.append("win rate must be at least 0.50 for approval")
+        shadow_quality = evaluate_shadow_quality(shadow_summary)
+        if not shadow_quality.ready:
+            reasons.extend(shadow_quality.reasons)
         if reasons:
             return ModelPromotionCheck(next_statuses=next_statuses, ready=False, reasons=tuple(reasons))
         return ModelPromotionCheck(
             next_statuses=next_statuses,
             ready=True,
             reasons=(
-                f"ready for approval with sample_count={sample_count}, score={score:.4f}, win_rate={win_rate:.2f}",
+                f"ready for approval with sample_count={sample_count}, score={score:.4f}, win_rate={win_rate:.2f}; "
+                f"{shadow_quality.reasons[0]}"
             ),
         )
