@@ -54,6 +54,12 @@ class StrategyTransitionRequest(BaseModel):
     changed_by: str = "desktop_operator"
 
 
+class ExecutionAcknowledgementRequest(BaseModel):
+    acknowledged: bool = True
+    note: str | None = None
+    acknowledged_by: str = "desktop_operator"
+
+
 def create_backend_app() -> FastAPI:
     app = FastAPI(title="SuperAjan12 Backend", version="0.2.0")
     started_at_monotonic = monotonic()
@@ -244,57 +250,46 @@ def create_backend_app() -> FastAPI:
     def transition_strategy_model(request: StrategyTransitionRequest) -> dict[str, Any]:
         settings = ensure_runtime_paths()
         store = SQLiteStore(settings.sqlite_path)
-        registry = ModelRegistry()
-        model_row = _resolve_transition_target(
+        target = _resolve_transition_target(
             store=store,
             model_name=request.model_name,
             model_version=request.model_version,
         )
-        if model_row is None:
-            raise HTTPException(status_code=404, detail="no model version available for transition")
+        if target is None:
+            raise HTTPException(status_code=404, detail="model version not found")
 
-        current_status = str(model_row.get("status") or "")
-        target_status = request.status.strip()
         version = ModelVersion(
-            name=str(model_row.get("name") or ""),
-            version=str(model_row.get("version") or ""),
-            status=current_status,
-            notes=None if model_row.get("notes") is None else str(model_row.get("notes")),
+            name=str(target.get("name") or ""),
+            version=str(target.get("version") or ""),
+            status=request.status,
+            notes=request.notes,
         )
-        registry.validate(ModelVersion(name=version.name, version=version.version, status=target_status, notes=request.notes))
+        registry = ModelRegistry()
+        registry.validate(version)
+        policy = registry.evaluate_promotion(
+            version,
+            latest_score=_latest_strategy_score_for(store, version.name),
+            current_status=str(target.get("status") or ""),
+        )
+        if not policy.ready:
+            raise HTTPException(status_code=400, detail={"reasons": list(policy.reasons), "next_statuses": list(policy.next_statuses)})
 
-        allowed = registry.allowed_transitions(current_status)
-        if current_status != target_status and target_status not in allowed:
-            raise HTTPException(
-                status_code=409,
-                detail=f"invalid transition {current_status} -> {target_status}; allowed={list(allowed)}",
-            )
-
-        latest_score = _latest_strategy_score_for(store, version.name)
-        promotion = registry.evaluate_promotion(version, latest_score=latest_score)
-        if target_status != "retired" and target_status in allowed and not promotion.ready:
-            raise HTTPException(
-                status_code=409,
-                detail=f"promotion gate blocked: {' | '.join(promotion.reasons)}",
-            )
-
-        reason = request.notes or f"operator transition {current_status} -> {target_status}"
+        previous_status = str(target.get("status") or "")
         store.save_model_version(
             name=version.name,
             version=version.version,
-            status=target_status,
-            notes=request.notes or version.notes,
-            change_reason=reason,
+            status=version.status,
+            notes=version.notes,
+            change_reason=request.notes or f"transitioned from {previous_status} to {version.status}",
             changed_by=request.changed_by,
         )
         payload = {
             "ok": True,
-            "name": version.name,
-            "version": version.version,
-            "from_status": current_status,
-            "to_status": target_status,
-            "changed_by": request.changed_by,
-            "notes": request.notes,
+            "model_name": version.name,
+            "model_version": version.version,
+            "from_status": previous_status,
+            "to_status": version.status,
+            "summary": _build_strategy_payload(store=store, limit=20)["summary"],
         }
         event_bus.publish("strategy.model.transitioned", payload)
         return payload
@@ -428,6 +423,28 @@ def create_backend_app() -> FastAPI:
             "dry_run_preview": _build_dry_run_preview(guard),
         }
         event_bus.publish("execution.snapshot", payload)
+        return payload
+
+    @app.post("/execution/operator-acknowledgement")
+    def execution_operator_acknowledgement(request: ExecutionAcknowledgementRequest) -> dict[str, Any]:
+        settings = ensure_runtime_paths()
+        store = SQLiteStore(settings.sqlite_path)
+        ack_id = store.record_operator_acknowledgement(
+            scope=LIVE_EXECUTION_ACK_SCOPE,
+            acknowledged=request.acknowledged,
+            note=request.note,
+            acknowledged_by=request.acknowledged_by,
+        )
+        payload = execution_status()
+        event_bus.publish(
+            "execution.operator_acknowledgement.recorded",
+            {
+                "ack_id": ack_id,
+                "acknowledged": request.acknowledged,
+                "acknowledged_by": request.acknowledged_by,
+                "note": request.note,
+            },
+        )
         return payload
 
     @app.get("/system/health")
