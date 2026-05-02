@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from superajan12.agents.reference import CryptoReferenceAgent
 from superajan12.agents.risk import RiskEngine
 from superajan12.audit import AuditLogger
 from superajan12.config import Settings, get_settings
+from superajan12.connectors.binance import BinanceFuturesClient
+from superajan12.connectors.coinbase import CoinbasePublicClient
+from superajan12.connectors.okx import OKXPublicClient
 from superajan12.connectors.polymarket import PolymarketClient
 from superajan12.models import ScanResult
 from superajan12.storage import SQLiteStore
@@ -33,6 +37,16 @@ def build_risk_engine(settings: Settings | None = None) -> RiskEngine:
         min_volume_usdc=settings.min_volume_usdc,
         max_spread_bps=settings.max_spread_bps,
         min_liquidity_usdc=settings.min_liquidity_usdc,
+    )
+
+
+def build_reference_agent(settings: Settings | None = None) -> CryptoReferenceAgent:
+    settings = settings or get_settings()
+    return CryptoReferenceAgent(
+        binance=BinanceFuturesClient(str(settings.binance_usds_futures_base_url)),
+        okx=OKXPublicClient(str(settings.okx_base_url)),
+        coinbase=CoinbasePublicClient(str(settings.coinbase_public_base_url)),
+        max_deviation_bps=settings.max_reference_price_deviation_bps,
     )
 
 
