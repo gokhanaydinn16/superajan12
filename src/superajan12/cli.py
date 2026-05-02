@@ -71,9 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     model.add_argument("--version", required=True)
     model.add_argument("--status", required=True, choices=sorted(ModelRegistry.allowed_statuses))
     model.add_argument("--notes", default=None)
+    model.add_argument("--change-reason", default=None)
 
     model_list = subparsers.add_parser("model-list", help="List stored model versions")
     model_list.add_argument("--limit", type=int, default=20)
+
+    model_history_parser = subparsers.add_parser("model-history", help="List model status transition history")
+    model_history_parser.add_argument("--limit", type=int, default=20)
 
     reconcile = subparsers.add_parser("reconcile", help="Compare local and external open position counts")
     reconcile.add_argument("--local", type=int, required=True)
@@ -341,9 +345,16 @@ def model_register(args: argparse.Namespace) -> None:
         version=version.version,
         status=version.status,
         notes=version.notes,
+        change_reason=args.change_reason,
+        changed_by="cli",
     )
+    policy = registry.evaluate_promotion(version)
     console.print(f"[green]Saved model_version_id={model_id}[/green]")
     console.print(f"can_trade_live={registry.can_trade_live(version)}")
+    console.print(f"next_statuses={policy.next_statuses}")
+    console.print(f"promotion_ready={policy.ready}")
+    for reason in policy.reasons:
+        console.print(f"- {reason}")
 
 
 def model_list(limit: int) -> None:
@@ -353,6 +364,16 @@ def model_list(limit: int) -> None:
         table.add_column(column)
     for row in rows:
         table.add_row(*(str(row.get(column)) for column in ("id", "name", "version", "status", "notes", "created_at")))
+    console.print(table)
+
+
+def model_history(limit: int) -> None:
+    rows = SQLiteStore(get_settings().sqlite_path).list_model_status_history(limit=limit)
+    table = Table(title="Model Status History")
+    for column in ("id", "name", "version", "from_status", "to_status", "reason", "changed_by", "changed_at"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(*(str(row.get(column)) for column in ("id", "name", "version", "from_status", "to_status", "reason", "changed_by", "changed_at")))
     console.print(table)
 
 
@@ -432,6 +453,8 @@ def main() -> None:
         model_register(args)
     elif args.command == "model-list":
         model_list(limit=args.limit)
+    elif args.command == "model-history":
+        model_history(limit=args.limit)
     elif args.command == "reconcile":
         reconcile(args)
     elif args.command == "capital-check":
