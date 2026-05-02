@@ -116,6 +116,22 @@ class SQLiteStore:
                     checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS shadow_trade_quality (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model_name TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    market_id TEXT NOT NULL,
+                    expected_price REAL,
+                    fill_price REAL,
+                    requested_size REAL NOT NULL,
+                    filled_size REAL NOT NULL,
+                    slippage_bps REAL,
+                    reconcile_ok INTEGER NOT NULL DEFAULT 0,
+                    approval_ok INTEGER NOT NULL DEFAULT 0,
+                    note TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS strategy_scores (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     strategy_name TEXT NOT NULL,
@@ -217,6 +233,7 @@ class SQLiteStore:
                 ("paper_trade_ideas", "model_probability", "REAL"),
                 ("paper_trade_ideas", "edge", "REAL"),
                 ("execution_sessions", "open_order_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("shadow_trade_quality", "approval_ok", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 self._ensure_column(conn, table, column, ddl)
 
@@ -316,6 +333,94 @@ class SQLiteStore:
             wins = int(result.get("wins") or 0)
             result["win_rate"] = None if count == 0 else wins / count
             return result
+
+    def record_shadow_trade_quality(
+        self,
+        *,
+        model_name: str,
+        model_version: str,
+        market_id: str,
+        expected_price: float | None,
+        fill_price: float | None,
+        requested_size: float,
+        filled_size: float,
+        reconcile_ok: bool,
+        approval_ok: bool,
+        note: str | None = None,
+    ) -> int:
+        slippage_bps = None
+        if (
+            expected_price is not None
+            and fill_price is not None
+            and expected_price > 0
+        ):
+            slippage_bps = abs(fill_price - expected_price) / expected_price * 10_000
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO shadow_trade_quality (
+                    model_name, model_version, market_id, expected_price, fill_price,
+                    requested_size, filled_size, slippage_bps, reconcile_ok, approval_ok, note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    model_name,
+                    model_version,
+                    market_id,
+                    expected_price,
+                    fill_price,
+                    requested_size,
+                    filled_size,
+                    slippage_bps,
+                    1 if reconcile_ok else 0,
+                    1 if approval_ok else 0,
+                    note,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def shadow_trade_quality_summary(
+        self,
+        *,
+        model_name: str | None = None,
+        model_version: str | None = None,
+    ) -> dict[str, object]:
+        query = """
+            SELECT COUNT(*) AS sample_count,
+                   AVG(slippage_bps) AS avg_slippage_bps,
+                   SUM(filled_size) AS total_filled_size,
+                   SUM(requested_size) AS total_requested_size,
+                   AVG(CASE WHEN reconcile_ok = 1 THEN 1.0 ELSE 0.0 END) AS reconcile_pass_rate,
+                   AVG(CASE WHEN approval_ok = 1 THEN 1.0 ELSE 0.0 END) AS approval_pass_rate
+            FROM shadow_trade_quality
+        """
+        params: tuple[object, ...] = ()
+        filters: list[str] = []
+        if model_name is not None:
+            filters.append("model_name = ?")
+            params += (model_name,)
+        if model_version is not None:
+            filters.append("model_version = ?")
+            params += (model_version,)
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
+        with self.connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(query, params).fetchone()
+            result = dict(row) if row is not None else {}
+        sample_count = int(result.get("sample_count") or 0)
+        total_filled = float(result.get("total_filled_size") or 0.0)
+        total_requested = float(result.get("total_requested_size") or 0.0)
+        fill_rate = None if total_requested <= 0 else total_filled / total_requested
+        return {
+            "sample_count": sample_count,
+            "avg_slippage_bps": None if result.get("avg_slippage_bps") is None else float(result.get("avg_slippage_bps")),
+            "fill_rate": fill_rate,
+            "reconcile_pass_rate": None if result.get("reconcile_pass_rate") is None else float(result.get("reconcile_pass_rate")),
+            "approval_pass_rate": None if result.get("approval_pass_rate") is None else float(result.get("approval_pass_rate")),
+            "total_requested_size": total_requested,
+            "total_filled_size": total_filled,
+        }
 
     def save_strategy_score(self, score: StrategyScore) -> int:
         with self.connect() as conn:
