@@ -2,7 +2,7 @@
 
 ## Project state
 
-SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot and does not submit real orders. The backend and tests can now also run through a constrained-runtime compatibility path when external package installation is unavailable.
+SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot and does not submit real orders. The backend and tests can run through a constrained-runtime compatibility path when external package installation is unavailable, and the repository now has a documented release path for Python and desktop-web artifacts.
 
 ## Completed layers
 
@@ -34,6 +34,7 @@ SuperAjan12 is ready for paper/shadow operation. It is not a live trading bot an
 26. Tests, CI and runtime-compat validation.
 27. Runbook and production checklist.
 28. Desktop/backend constrained-runtime fallback path.
+29. Release workflow, changelog, and versioning policy.
 
 ## Main commands
 
@@ -46,7 +47,7 @@ superajan12 report
 superajan12 shadow-report
 superajan12 strategy-score --name baseline --pnl 1.2,-0.5,0.8 --save
 superajan12 strategy-list --limit 10
-superajan12 model-register --name probability --version 0.1.0 --status candidate --notes baseline
+superajan12 model-register --name probability --version 0.2.0 --status candidate --notes baseline
 superajan12 model-list --limit 20
 superajan12 reconcile --local 0 --external 0
 superajan12 capital-check --requested-risk 5 --open-risk 10 --daily-pnl -1
@@ -66,7 +67,7 @@ The project intentionally stops before real order submission. The dry-run live c
 
 ## Before any live work
 
-Follow `docs/PRODUCTION_CHECKLIST.md` and `docs/RUNBOOK.md`.
+Follow `docs/PRODUCTION_CHECKLIST.md`, `docs/RUNBOOK.md`, and `docs/RELEASE.md`.
 
 Minimum required evidence before live adapter development:
 
@@ -84,15 +85,16 @@ Minimum required evidence before live adapter development:
 ## Next engineering tasks
 
 1. Run the system locally and collect paper/shadow data.
-2. Restore desktop packaging in an environment with npm registry access and Rust tooling.
-3. Inspect real Polymarket token id behavior across many markets.
-4. Add automated shadow marking from latest market price.
-5. Add category-level performance reports.
-6. Add model promotion policy enforcement in CLI.
-7. Add real on-chain data connector only after source selection.
-8. Add real social data connector only after rate limits and source quality are defined.
-9. Keep live order sending disabled until production checklist is complete.
+2. Replace top-level compatibility shims with an explicit compat namespace.
+3. Restore desktop packaging in an environment with npm registry access and Rust tooling.
+4. Inspect real Polymarket token id behavior across many markets.
+5. Add automated shadow marking from latest market price.
+6. Add category-level performance reports.
+7. Add model promotion policy enforcement in CLI.
+8. Add real on-chain data connector only after source selection.
+9. Add real social data connector only after rate limits and source quality are defined.
+10. Keep live order sending disabled until production checklist is complete.
 
 ## Handoff conclusion
 
-The paper/shadow core is ready for local validation. Desktop packaging is still an environment-dependent follow-up task rather than a completed deliverable.
+The paper/shadow core is ready for local validation and controlled release artifact generation. Desktop bundling and explicit compat-namespace migration are the main remaining structural follow-ups.
