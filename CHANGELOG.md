@@ -1,1 +1,36 @@
-IyBDaGFuZ2Vsb2cKCiMjIFswLjEuMF0gLSAyMDI2LTA1LTAxCiMjIyBBZGRlZAotIFNoYXJlZCBydW50aW1lIGhlbHBlcnMgbWFrZSBDTEksIGJhY2tlbmQsIGFuZCB3ZWIgc2NhbiBwZXJzaXN0ZW5jZS9hdWRpdCB0cmFpbHMgY29uc2lzdGVudC4KLSBEZXNrdG9wL1RhdXJpIGljb24gZmFsbGJhY2sgYW5kIHNodXRkb3duIGNsZWFudXAgbm93IHdvcmsgb24gQ0kgd2l0aG91dCBtYW51YWwgYXNzZXRzLgotIFJlcG9ydGluZywgc2FmZXR5LCBhbmQgc3RvcmFnZSB0ZXN0cyBleHBhbmRlZCB0byBzdXJmYWNlIHJlZ3Jlc3Npb25zIGVhcmx5LgojIyMgRml4ZWQKLSBEYXNoYm9hcmQgbm93IGJpYXNlcyB0b3dhcmQgdGhlIGxhdGVzdCBzY2FuIHJlc3VsdHMsIGFuZCBtb2RlbCByZWdpc3RyeSB1cHNlcnRzIGtlZXAgcm93IGlkZW50aXR5LgotIFNhZmV0eSBraWxsLXN3aXRjaC9zYWZlLW1vZGUgaGFuZGxpbmcgaXMgZGV0ZXJtaW5pc3RpYywgYW5kIHNjYW4vYXVkaXQgcmVjb3JkcyBhcmUgY2VudHJhbGl6ZWQuCiMjIyBOb3RlcwotIENJIHJ1biAjMTc4IG9uIGNvbW1pdCBgMjEwNDYyMGY2YmUwZTM4YjE2OTg0Yjc5YjhiMTM2M2YxNDQ5MjllNGAgY29tcGxldGVkIHN1Y2Nlc3NmdWxseS4KLSBUaGUgcmVsZWFzZSBwcm9jZXNzIHN0aWxsIG5lZWRzIHZlcnNpb24gYnVtcHMsIHB1Ymxpc2hpbmcgYXV0b21hdGlvbiwgYW5kIGRlc2t0b3AgYnVuZGxlIHRvb2xpbmcgKHNlZSByZWxlYXNlIHJlYWRpbmVzcyBiYWNrbG9nKS4K
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on Keep a Changelog, and this repository follows semantic versioning for the Python package, desktop shell, and release tags.
+
+## [0.2.0] - 2026-05-03
+
+### Added
+- A documented release process with version policy, artifact expectations, and operator checklist.
+- A GitHub release workflow that builds Python artifacts and desktop web artifacts on tags or manual dispatch.
+- A draft-PR fallback procedure for connector-side ready-for-review failures.
+- An explicit changelog file as the release-notes source of truth.
+
+### Changed
+- Unified the package, desktop shell, and Tauri app version at `0.2.0`.
+- Split CI into two explicit Python lanes: installed dependencies and repository runtime-compat mode.
+- Tightened the installed-dependency lane so it fails if repository shim modules leak into the test environment.
+
+### Notes
+- Desktop bundle generation remains intentionally disabled in CI until versioned packaging assets and release-grade desktop inputs are committed.
+
+## [0.1.0] - 2026-05-01
+
+### Added
+- Shared runtime helpers make CLI, backend, and web scan persistence and audit trails consistent.
+- Desktop/Tauri icon fallback and shutdown cleanup work in CI without manual assets.
+- Reporting, safety, and storage tests expanded to surface regressions early.
+
+### Fixed
+- Dashboard now biases toward the latest scan results, and model registry upserts keep row identity.
+- Safety kill-switch and safe-mode handling are deterministic, and scan/audit records are centralized.
+
+### Notes
+- CI run `#178` on commit `2104620f6be0e38b16984b79b8b1363f144929e4` completed successfully.
+- The release process still needed version bumps, publishing automation, and desktop bundle tooling before this hardening pass.
