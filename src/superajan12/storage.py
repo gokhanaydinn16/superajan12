@@ -323,7 +323,6 @@ class SQLiteStore:
         return snapshot_map
 
     def auto_shadow_mark_from_latest_scores(self) -> list[dict[str, object]]:
-        from superajan12.models import PaperPosition
         from superajan12.shadow import ShadowEvaluator
 
         positions = self.list_open_positions()
@@ -343,11 +342,8 @@ class SQLiteStore:
                 entry_price=float(position_row.get("entry_price") or 0.0),
                 size_shares=float(position_row.get("size_shares") or 0.0),
                 risk_usdc=float(position_row.get("risk_usdc") or 0.0),
-                opened_at=PaperPosition().opened_at if False else position_row.get("opened_at"),
                 status=str(position_row.get("status") or "open"),
             )
-            if not isinstance(position.opened_at, str):
-                pass
             outcome = evaluator.evaluate_position(position, latest_price=None if latest_price is None else float(latest_price))
             outcome_id = int(self.save_shadow_outcome(int(position_row.get("id") or 0), outcome))
             results.append(
