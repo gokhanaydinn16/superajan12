@@ -21,6 +21,12 @@ class ModelPromotionCheck:
     reasons: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class LiveModelReadiness:
+    ready: bool
+    blockers: tuple[str, ...]
+
+
 class ModelRegistry:
     """In-memory model version policy helper.
 
@@ -108,6 +114,8 @@ class ModelRegistry:
 
         sample_count = int(latest_score.get("sample_count") or 0)
         score = float(latest_score.get("score") or 0.0)
+        total_pnl = float(latest_score.get("total_pnl_usdc") or 0.0)
+        avg_pnl = float(latest_score.get("avg_pnl_usdc") or 0.0)
         win_rate_raw = latest_score.get("win_rate")
         win_rate = None if win_rate_raw is None else float(win_rate_raw)
 
@@ -117,12 +125,16 @@ class ModelRegistry:
                 reasons.append("need at least 20 scored outcomes for shadow promotion")
             if score <= 0:
                 reasons.append("strategy score must be positive for shadow promotion")
+            if total_pnl <= 0:
+                reasons.append("total pnl must be positive for shadow promotion")
             if reasons:
                 return ModelPromotionCheck(next_statuses=next_statuses, ready=False, reasons=tuple(reasons))
             return ModelPromotionCheck(
                 next_statuses=next_statuses,
                 ready=True,
-                reasons=(f"ready for shadow promotion with sample_count={sample_count} and score={score:.4f}",),
+                reasons=(
+                    f"ready for shadow promotion with sample_count={sample_count}, score={score:.4f}, total_pnl={total_pnl:.4f}",
+                ),
             )
 
         reasons = []
@@ -130,6 +142,10 @@ class ModelRegistry:
             reasons.append("need at least 50 scored outcomes for approval")
         if score <= 0:
             reasons.append("strategy score must stay positive for approval")
+        if total_pnl <= 0:
+            reasons.append("total pnl must stay positive for approval")
+        if avg_pnl <= 0:
+            reasons.append("average pnl must stay positive for approval")
         if win_rate is None or win_rate < 0.5:
             reasons.append("win rate must be at least 0.50 for approval")
         if reasons:
@@ -141,3 +157,38 @@ class ModelRegistry:
                 f"ready for approval with sample_count={sample_count}, score={score:.4f}, win_rate={win_rate:.2f}",
             ),
         )
+
+    def evaluate_live_readiness(
+        self,
+        version: ModelVersion,
+        latest_score: Mapping[str, object] | None = None,
+        readiness_items: list[Mapping[str, object]] | None = None,
+    ) -> LiveModelReadiness:
+        blockers: list[str] = []
+
+        if version.status != "approved":
+            blockers.append("model must be approved before live activation")
+
+        if latest_score is None:
+            blockers.append("latest strategy score is missing")
+        else:
+            sample_count = int(latest_score.get("sample_count") or 0)
+            score = float(latest_score.get("score") or 0.0)
+            total_pnl = float(latest_score.get("total_pnl_usdc") or 0.0)
+            win_rate_raw = latest_score.get("win_rate")
+            win_rate = None if win_rate_raw is None else float(win_rate_raw)
+            if sample_count < 100:
+                blockers.append("live activation requires at least 100 scored outcomes")
+            if score <= 0:
+                blockers.append("live activation requires a positive strategy score")
+            if total_pnl <= 0:
+                blockers.append("live activation requires positive total pnl")
+            if win_rate is None or win_rate < 0.55:
+                blockers.append("live activation requires win rate of at least 0.55")
+
+        for item in readiness_items or []:
+            if not bool(item.get("passed")):
+                label = str(item.get("label") or item.get("item_key") or "readiness item")
+                blockers.append(f"checklist blocker: {label}")
+
+        return LiveModelReadiness(ready=not blockers, blockers=tuple(blockers))
