@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-save", action="store_true", help="Do not write SQLite or audit log records")
 
     reference = subparsers.add_parser("reference-check", help="Cross-check crypto reference prices")
-    reference.add_argument("--symbols", default="BTC,ETH,SOL", help="Comma-separated symbols: BTC,ETH,SOL")
+    reference.add_argument("--symbols", default="BTC,ETH,SOL,XRP,DOGE", help="Comma-separated symbols: BTC,ETH,SOL,XRP,DOGE")
 
     report_parser = subparsers.add_parser("report", help="Show local paper/shadow report")
     report_parser.add_argument("--top", type=int, default=10)
@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     shadow.add_argument("--latest-price", type=float, required=True)
 
     subparsers.add_parser("shadow-report", help="Show aggregate shadow outcome report")
+    subparsers.add_parser("shadow-sync", help="Auto-mark open paper positions from latest stored market prices")
+    subparsers.add_parser("operations-report", help="Show execution session, veto and readiness state")
 
     strategy = subparsers.add_parser("strategy-score", help="Score a strategy from comma-separated PnL values")
     strategy.add_argument("--name", required=True)
@@ -136,24 +138,24 @@ async def run_scan(limit: int, save: bool = True) -> None:
 
     table = Table(title="SuperAjan12 Polymarket Scan")
     table.add_column("Decision")
+    table.add_column("Category")
     table.add_column("Score", justify="right")
     table.add_column("Edge", justify="right")
     table.add_column("ResConf", justify="right")
     table.add_column("Spread bps", justify="right")
     table.add_column("Source")
     table.add_column("Question")
-    table.add_column("Reasons")
 
     for score in result.scores[:limit]:
         table.add_row(
             score.decision.value,
+            score.category or "uncategorized",
             f"{score.score:,.1f}",
             "-" if score.edge is None else f"{score.edge:.4f}",
             "-" if score.resolution_confidence is None else f"{score.resolution_confidence:.2f}",
             "-" if score.spread_bps is None else f"{score.spread_bps:,.1f}",
             score.orderbook_source or "-",
             score.question[:80],
-            "; ".join(score.reasons[:3]),
         )
 
     console.print(table)
@@ -167,7 +169,7 @@ async def run_scan(limit: int, save: bool = True) -> None:
         console.print("\n[bold green]Paper trade ideas[/bold green]")
         for idea in result.ideas:
             console.print(
-                f"- {idea.side} | risk={idea.risk_usdc:.2f} USDC | "
+                f"- {idea.side} | category={idea.category or 'uncategorized'} | risk={idea.risk_usdc:.2f} USDC | "
                 f"price={idea.reference_price} | edge={idea.edge} | {idea.question}"
             )
     else:
@@ -177,7 +179,7 @@ async def run_scan(limit: int, save: bool = True) -> None:
         console.print("\n[bold cyan]Paper positions opened[/bold cyan]")
         for position in result.paper_positions:
             console.print(
-                f"- {position.side} | entry={position.entry_price:.4f} | "
+                f"- {position.side} | category={position.category or 'uncategorized'} | entry={position.entry_price:.4f} | "
                 f"shares={position.size_shares:.4f} | risk={position.risk_usdc:.2f} | {position.question}"
             )
 
@@ -193,6 +195,10 @@ async def run_reference_check(symbols: str) -> None:
             checks.append(await agent.check_eth())
         elif symbol == "SOL":
             checks.append(await agent.check_sol())
+        elif symbol == "XRP":
+            checks.append(await agent.check_xrp())
+        elif symbol == "DOGE":
+            checks.append(await agent.check_doge())
         else:
             console.print(f"[yellow]Unsupported reference symbol skipped:[/yellow] {symbol}")
 
@@ -267,10 +273,11 @@ def report(top: int = 10) -> None:
     top_markets = reporter.top_scored_markets(limit=top)
     if top_markets:
         top_table = Table(title="Top Scored Markets")
-        for column in ("decision", "score", "edge", "resolution_confidence", "spread_bps", "question"):
+        for column in ("category", "decision", "score", "edge", "resolution_confidence", "spread_bps", "question"):
             top_table.add_column(column)
         for row in top_markets:
             top_table.add_row(
+                str(row.get("category") or "uncategorized"),
                 str(row.get("decision")),
                 f"{row.get('score'):.2f}",
                 "-" if row.get("edge") is None else f"{row.get('edge'):.4f}",
@@ -279,6 +286,23 @@ def report(top: int = 10) -> None:
                 str(row.get("question"))[:80],
             )
         console.print(top_table)
+
+    categories = reporter.category_summary()
+    if categories:
+        category_table = Table(title="Category Breakdown")
+        for column in ("category", "market_count", "approve_count", "watch_count", "reject_count", "avg_score", "avg_edge"):
+            category_table.add_column(column)
+        for row in categories:
+            category_table.add_row(
+                str(row.get("category")),
+                str(row.get("market_count")),
+                str(row.get("approve_count")),
+                str(row.get("watch_count")),
+                str(row.get("reject_count")),
+                f"{float(row.get('avg_score') or 0.0):.2f}",
+                f"{float(row.get('avg_edge') or 0.0):.4f}",
+            )
+        console.print(category_table)
 
 
 def shadow_mark(args: argparse.Namespace) -> None:
@@ -299,14 +323,41 @@ def shadow_mark(args: argparse.Namespace) -> None:
     console.print(outcome.model_dump())
 
 
+def shadow_sync() -> None:
+    store = SQLiteStore(get_settings().sqlite_path)
+    rows = store.auto_shadow_mark_from_latest_scores()
+    table = Table(title="Shadow Sync")
+    for column in ("position_id", "market_id", "category", "latest_price", "status", "unrealized_pnl_usdc", "outcome_id"):
+        table.add_column(column)
+    for row in rows:
+        table.add_row(*(str(row.get(column)) for column in ("position_id", "market_id", "category", "latest_price", "status", "unrealized_pnl_usdc", "outcome_id")))
+    console.print(table)
+
+
 def shadow_report() -> None:
-    summary = SQLiteStore(get_settings().sqlite_path).shadow_summary()
+    store = SQLiteStore(get_settings().sqlite_path)
+    summary = store.shadow_summary()
     table = Table(title="Shadow Outcome Summary")
     table.add_column("Field")
     table.add_column("Value")
     for key, value in summary.items():
         table.add_row(str(key), str(value))
     console.print(table)
+
+    categories = store.shadow_category_summary()
+    if categories:
+        category_table = Table(title="Shadow Category Summary")
+        for column in ("category", "outcome_count", "total_unrealized_pnl_usdc", "avg_unrealized_pnl_usdc", "win_rate"):
+            category_table.add_column(column)
+        for row in categories:
+            category_table.add_row(
+                str(row.get("category")),
+                str(row.get("outcome_count")),
+                str(row.get("total_unrealized_pnl_usdc")),
+                str(row.get("avg_unrealized_pnl_usdc")),
+                str(row.get("win_rate")),
+            )
+        console.print(category_table)
 
 
 def strategy_score(args: argparse.Namespace) -> None:
@@ -400,8 +451,9 @@ def model_policy(limit: int) -> None:
     registry = ModelRegistry()
     latest_scores = _latest_strategy_score_by_name(limit=max(limit * 3, 20))
     models = store.list_model_versions(limit=limit)
+    readiness_items = store.list_readiness_items("micro_live")
     table = Table(title="Model Promotion Policy")
-    for column in ("name", "version", "status", "ready", "next_statuses", "score", "sample_count", "reasons"):
+    for column in ("name", "version", "status", "promotion_ready", "live_ready", "next_statuses", "score", "sample_count", "reasons"):
         table.add_column(column)
     for row in models:
         version = ModelVersion(
@@ -412,17 +464,56 @@ def model_policy(limit: int) -> None:
         )
         latest_score = latest_scores.get(version.name)
         policy = registry.evaluate_promotion(version, latest_score=latest_score)
+        live_readiness = registry.evaluate_live_readiness(version, latest_score=latest_score, readiness_items=readiness_items)
         table.add_row(
             version.name,
             version.version,
             version.status,
             "yes" if policy.ready else "no",
+            "yes" if live_readiness.ready else "no",
             ", ".join(policy.next_statuses) if policy.next_statuses else "-",
             "-" if latest_score is None else str(latest_score.get("score")),
             "-" if latest_score is None else str(latest_score.get("sample_count")),
-            " | ".join(policy.reasons),
+            " | ".join(policy.reasons if policy.reasons else live_readiness.blockers),
         )
     console.print(table)
+
+
+def operations_report() -> None:
+    store = SQLiteStore(get_settings().sqlite_path)
+    session = store.latest_execution_session()
+    veto = store.latest_execution_veto("live_execution")
+    readiness = store.list_readiness_items("micro_live")
+
+    if session is not None:
+        session_table = Table(title="Execution Session")
+        session_table.add_column("Field")
+        session_table.add_column("Value")
+        for key, value in session.items():
+            session_table.add_row(str(key), str(value))
+        console.print(session_table)
+
+    if veto is not None:
+        veto_table = Table(title="Latest Execution Veto")
+        veto_table.add_column("Field")
+        veto_table.add_column("Value")
+        for key, value in veto.items():
+            veto_table.add_row(str(key), str(value))
+        console.print(veto_table)
+
+    if readiness:
+        readiness_table = Table(title="Micro-Live Readiness")
+        for column in ("item_key", "passed", "label", "detail", "updated_at"):
+            readiness_table.add_column(column)
+        for row in readiness:
+            readiness_table.add_row(
+                str(row.get("item_key")),
+                "yes" if bool(row.get("passed")) else "no",
+                str(row.get("label")),
+                str(row.get("detail")),
+                str(row.get("updated_at")),
+            )
+        console.print(readiness_table)
 
 
 def reconcile(args: argparse.Namespace) -> None:
@@ -497,6 +588,10 @@ def main() -> None:
         shadow_mark(args)
     elif args.command == "shadow-report":
         shadow_report()
+    elif args.command == "shadow-sync":
+        shadow_sync()
+    elif args.command == "operations-report":
+        operations_report()
     elif args.command == "strategy-score":
         strategy_score(args)
     elif args.command == "strategy-list":
