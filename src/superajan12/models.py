@@ -144,6 +144,7 @@ class ProbabilityEstimate(BaseModel):
 class MarketScore(BaseModel):
     market_id: str
     question: str
+    category: str | None = None
     decision: Decision
     score: float
     reasons: list[str] = Field(default_factory=list)
@@ -186,6 +187,7 @@ class RiskDecision(BaseModel):
 class PaperTradeIdea(BaseModel):
     market_id: str
     question: str
+    category: str | None = None
     side: str
     reference_price: float | None
     risk_usdc: float
@@ -198,6 +200,7 @@ class PaperTradeIdea(BaseModel):
 class PaperPosition(BaseModel):
     market_id: str
     question: str
+    category: str | None = None
     side: str
     entry_price: float
     size_shares: float
