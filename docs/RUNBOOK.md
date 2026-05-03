@@ -54,7 +54,7 @@ superajan12 shadow-report
 ## Model workflow
 
 ```bash
-superajan12 model-register --name probability --version 0.1.0 --status candidate --notes "baseline"
+superajan12 model-register --name probability --version 0.2.0 --status candidate --notes "baseline"
 superajan12 model-list --limit 20
 ```
 
@@ -98,6 +98,29 @@ superajan12 prepare-order --market-id m1 --side YES --price 0.50 --size 10 --for
 ```
 
 This does not send orders. It only prepares a dry-run order object.
+
+## Release workflow
+
+Release expectations are documented in `docs/RELEASE.md`.
+
+Operational summary:
+
+1. Align versions across Python and desktop surfaces.
+2. Update `CHANGELOG.md`.
+3. Wait for CI to pass.
+4. Create tag `vX.Y.Z` or run the manual release workflow.
+5. Review uploaded Python and desktop web artifacts.
+
+## Draft PR fallback procedure
+
+If the draft-to-ready connector path fails during review preparation:
+
+1. Confirm the failure is tool-side rather than a review rule or branch protection issue.
+2. Record the branch head SHA and verify CI is green.
+3. Close the broken draft PR without deleting the branch.
+4. Reopen the same branch as a normal PR with the same title and body.
+5. Mention the superseded draft PR number in the replacement PR body.
+6. Re-check CI and mergeability before merging.
 
 ## Incident response
 
